@@ -11,7 +11,8 @@
 #
 # To enable: GitHub repo Settings -> Pages -> Source = "Deploy from a
 # branch", Branch = main / folder = /docs. Pages will auto-build on
-# every push to main that touches docs/**.
+# every push to main that touches docs/**. Custom domain = rectophone.com,
+# the site's root (docs/CNAME carries it, so `baseurl` is empty).
 
 title: Recto Agentic
 description: >-
@@ -21,13 +22,13 @@ description: >-
 
 # Theme + permalink + URL config
 theme: jekyll-theme-cayman
-url: https://erikcheatham.github.io
-baseurl: /Recto
+url: https://rectophone.com
+baseurl: ""
 
 # Repository (cayman theme uses this to add a "View on GitHub" link)
-repository: erikcheatham/Recto
+repository: Recto-LLC/Recto
 github:
-  repository_url: https://github.com/erikcheatham/Recto
+  repository_url: https://github.com/Recto-LLC/Recto
 
 # Plugins (defaults that cayman pulls in; explicit for clarity)
 plugins:
@@ -106,6 +107,10 @@ exclude:
 # `assets` stays: it is matched at the top level, where entry == path, and
 # without it Jekyll never walks into the directory at all.
 #
+# `CNAME` is the custom domain, one line: rectophone.com. It is a
+# top-level entry, like `assets`, and it says nothing but the site's
+# own address, so publishing it discloses nothing.
+#
 # DO NOT "fix" these back to paths. Verified against
 # jekyll/jekyll v3.9.5 lib/jekyll/entry_filter.rb, 2026-08-20.
 include:
@@ -115,6 +120,7 @@ include:
   - assets
   - badge-app-store.svg
   - badge-google-play.svg
+  - CNAME
 
 # SEO defaults
 defaults:

@@ -6,7 +6,7 @@ permalink: /privacy/
 
 # Privacy Policy — Recto Agentic
 
-**Last updated: 2026-10-27**
+**Last updated: 2026-10-30**
 
 Recto Agentic is a public open-source application (Apache 2.0) that
 serves as an operator-phone-as-root-of-trust authenticator. This
@@ -69,7 +69,7 @@ For Firebase Cloud Messaging (Android): an FCM token serves the same function as
 
 ## Open source
 
-Recto Agentic is open source under the Apache 2.0 license. The exact code running in the version you have installed is published at [github.com/erikcheatham/Recto](https://github.com/erikcheatham/Recto). You are welcome to audit any aspect of the data handling described in this policy.
+Recto Agentic is open source under the Apache 2.0 license. The exact code running in the version you have installed is published at [github.com/Recto-LLC/Recto](https://github.com/Recto-LLC/Recto). You are welcome to audit any aspect of the data handling described in this policy.
 
 ---
 
@@ -87,4 +87,4 @@ If this policy is updated, the "Last updated" date at the top will be revised. M
 
 ## Contact
 
-Privacy questions: open an issue at [github.com/erikcheatham/Recto/issues](https://github.com/erikcheatham/Recto/issues).
+Privacy questions: open an issue at [github.com/Recto-LLC/Recto/issues](https://github.com/Recto-LLC/Recto/issues).

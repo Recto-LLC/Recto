@@ -182,7 +182,7 @@ without a biometric.
 Python 3.12+.
 
 ```bash
-git clone https://github.com/erikcheatham/Recto.git
+git clone https://github.com/Recto-LLC/Recto.git
 cd Recto
 python -m venv .venv
 . .venv/bin/activate          # Windows: .\.venv\Scripts\Activate.ps1

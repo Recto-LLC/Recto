@@ -7,10 +7,10 @@ permalink: /support/
 # Support — Recto Agentic
 
 For bug reports, questions, and feature requests:
-[https://github.com/erikcheatham/Recto/issues](https://github.com/erikcheatham/Recto/issues)
+[https://github.com/Recto-LLC/Recto/issues](https://github.com/Recto-LLC/Recto/issues)
 
 To report a vulnerability, do it privately, never in an issue:
-[SECURITY.md](https://github.com/erikcheatham/Recto/blob/main/SECURITY.md).
+[SECURITY.md](https://github.com/Recto-LLC/Recto/blob/main/SECURITY.md).
 
 ---
 
@@ -28,7 +28,7 @@ Recto uses your device's secure hardware to gate signing. The biometric prompt i
 - Your device's passcode is not set (biometric-protected keys need one).
 - Hardware fault (rare).
 
-Restart the app and try again. If the issue persists, [open an issue](https://github.com/erikcheatham/Recto/issues) with your device model and iOS / Android version.
+Restart the app and try again. If the issue persists, [open an issue](https://github.com/Recto-LLC/Recto/issues) with your device model and iOS / Android version.
 
 ### Signing requests aren't arriving on my Android device.
 
@@ -49,7 +49,7 @@ Your recovery phrase restores your signing keys on a new phone. Each phone also 
 
 ### Is Recto Agentic open source?
 
-Yes. The full source code is published at [github.com/erikcheatham/Recto](https://github.com/erikcheatham/Recto) under the Apache 2.0 license.
+Yes. The full source code is published at [github.com/Recto-LLC/Recto](https://github.com/Recto-LLC/Recto) under the Apache 2.0 license.
 
 ### How does Recto differ from Google Authenticator / Authy?
 
@@ -57,4 +57,4 @@ Google Authenticator and Authy generate time-based one-time passwords (TOTP / RF
 
 ---
 
-For developers integrating with Recto: the [README](https://github.com/erikcheatham/Recto#readme) shows how.
+For developers integrating with Recto: the [README](https://github.com/Recto-LLC/Recto#readme) shows how.

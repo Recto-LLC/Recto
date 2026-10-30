@@ -107,7 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="recto",
         description=(
             "Modern Windows-service wrapper. Spiritual successor to NSSM. "
-            "See https://github.com/erikcheatham/Recto."
+            "See https://github.com/Recto-LLC/Recto."
         ),
     )
     parser.add_argument("--version", action="version", version=_version_string())

@@ -15,8 +15,8 @@ and you approve on your phone.
 
 ## Get the app
 
-[<img src="/Recto/assets/badge-app-store.svg" alt="Download Recto Agentic on the App Store" height="54">](https://apps.apple.com/us/app/recto-agentic/id6771544174)&nbsp;
-[<img src="/Recto/assets/badge-google-play.svg" alt="Get Recto Agentic on Google Play" height="54">](https://play.google.com/store/apps/details?id=app.recto.phone)
+[<img src="/assets/badge-app-store.svg" alt="Download Recto Agentic on the App Store" height="54">](https://apps.apple.com/us/app/recto-agentic/id6771544174)&nbsp;
+[<img src="/assets/badge-google-play.svg" alt="Get Recto Agentic on Google Play" height="54">](https://play.google.com/store/apps/details?id=app.recto.phone)
 
 - **iOS / iPadOS** — [Apple App Store](https://apps.apple.com/us/app/recto-agentic/id6771544174)
 - **Android** — [Google Play](https://play.google.com/store/apps/details?id=app.recto.phone)
@@ -49,8 +49,8 @@ phone.
 
 ## Pages
 
-- [Privacy Policy](/Recto/privacy/) — what data the app does and doesn't handle
-- [Support](/Recto/support/) — FAQ and issue-reporting
+- [Privacy Policy](/privacy/) — what data the app does and doesn't handle
+- [Support](/support/) — FAQ and issue-reporting
 
 ---
 
@@ -58,17 +58,17 @@ phone.
 
 **Recto Agentic** is the mobile app. **Recto** is the open-source substrate
 it pairs with (Apache 2.0). The
-[README](https://github.com/erikcheatham/Recto#readme) shows how to
+[README](https://github.com/Recto-LLC/Recto#readme) shows how to
 integrate a service.
 
 ---
 
 ## Contact
 
-For privacy questions or app support: [open an issue](https://github.com/erikcheatham/Recto/issues) on the GitHub repository.
+For privacy questions or app support: [open an issue](https://github.com/Recto-LLC/Recto/issues) on the GitHub repository.
 
 To report a vulnerability, do it privately, never in an issue:
-[SECURITY.md](https://github.com/erikcheatham/Recto/blob/main/SECURITY.md).
+[SECURITY.md](https://github.com/Recto-LLC/Recto/blob/main/SECURITY.md).
 
 ---
 

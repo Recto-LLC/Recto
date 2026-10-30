@@ -135,10 +135,10 @@ qr = [
    # is recto/qr/SPEC.md.
 
 [project.urls]
-Homepage = "https://github.com/erikcheatham/Recto"
-Repository = "https://github.com/erikcheatham/Recto"
-Issues = "https://github.com/erikcheatham/Recto/issues"
-Documentation = "https://github.com/erikcheatham/Recto/blob/main/README.md"
+Homepage = "https://rectophone.com"
+Repository = "https://github.com/Recto-LLC/Recto"
+Issues = "https://github.com/Recto-LLC/Recto/issues"
+Documentation = "https://github.com/Recto-LLC/Recto/blob/main/README.md"
 
 [project.scripts]
 recto = "recto.cli:main"

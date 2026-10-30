@@ -81,7 +81,7 @@ ARG RECTO_BUILD_CREATED="unknown"
 
 LABEL org.opencontainers.image.title="Recto bootloader" \
       org.opencontainers.image.description="Phone-enclave-rooted capability authorization substrate" \
-      org.opencontainers.image.source="https://github.com/erikcheatham/Recto" \
+      org.opencontainers.image.source="https://github.com/Recto-LLC/Recto" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.revision="${RECTO_BUILD_REVISION}" \
       org.opencontainers.image.created="${RECTO_BUILD_CREATED}"
