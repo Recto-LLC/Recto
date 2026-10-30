@@ -169,6 +169,26 @@ jobs:
           fi
           echo "both badge assets published"
 
+      - name: Every page carries the theme
+        # The allowlist once dropped the THEME'S OWN LAYOUT (found 2026-10-30): Jekyll 3.9
+        # reads a theme's _layouts through the same entry filter as docs/, so `exclude: ["*"]`
+        # excluded cayman's default.html and every page shipped as a bare fragment - no
+        # <head>, no stylesheet - while each step above passed. `default.html` is named in
+        # include: now; this step fails the build when a page loses the layout again.
+        run: |
+          set -euo pipefail
+          fail=0
+          for p in $EXPECTED_PAGES; do
+            if ! grep -q 'assets/css/style.css' "_site/$p"; then
+              echo "::error::$p has no theme stylesheet - the layout did not apply (see include: in docs/_config.yml)"
+              fail=1
+            fi
+          done
+          if [ "$fail" -eq 0 ]; then
+            echo "every page carries the theme layout"
+          fi
+          exit "$fail"
+
       - name: Remove the canary
         if: always()
         run: rm -f docs/__canary-internal.md

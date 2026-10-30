@@ -111,6 +111,15 @@ exclude:
 # top-level entry, like `assets`, and it says nothing but the site's
 # own address, so publishing it discloses nothing.
 #
+# `default.html` IS THE THEME'S LAYOUT, and without it no page has one.
+# Jekyll 3.9 reads a theme's _layouts through the SAME EntryFilter as this
+# directory (readers/layout_reader.rb, entries_in), so `exclude: ["*"]`
+# dropped cayman's default.html too: from the day the allowlist landed every
+# page published as a bare fragment - no <head>, no stylesheet - while every
+# check passed (found 2026-10-30, at the move to rectophone.com). Named back
+# in by basename, like the badges; no file of that name lives under docs/.
+# pages-build.yml now fails a page that does not carry the theme.
+#
 # DO NOT "fix" these back to paths. Verified against
 # jekyll/jekyll v3.9.5 lib/jekyll/entry_filter.rb, 2026-08-20.
 include:
@@ -121,6 +130,7 @@ include:
   - badge-app-store.svg
   - badge-google-play.svg
   - CNAME
+  - default.html
 
 # SEO defaults
 defaults:
