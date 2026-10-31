@@ -10,7 +10,7 @@ description = "Phone-enclave-rooted capability authorization substrate for auton
 readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
-authors = [{name = "Recto LLC"}]
+authors = [{name = "Recto LLC", email = "support@rectophone.com"}]
 keywords = ["capability-authorization", "service-manager", "credentials", "devops", "ai-agents", "biometric-signing"]
 classifiers = [
     "Development Status :: 4 - Beta",

@@ -6,7 +6,7 @@ permalink: /privacy/
 
 # Privacy Policy — Recto Agentic
 
-**Last updated: 2026-10-30**
+**Last updated: 2026-10-31**
 
 Recto Agentic is a public open-source application (Apache 2.0) that
 serves as an operator-phone-as-root-of-trust authenticator. This
@@ -87,4 +87,4 @@ If this policy is updated, the "Last updated" date at the top will be revised. M
 
 ## Contact
 
-Privacy questions: open an issue at [github.com/Recto-LLC/Recto/issues](https://github.com/Recto-LLC/Recto/issues).
+Privacy questions: email [support@rectophone.com](mailto:support@rectophone.com), or open an issue at [github.com/Recto-LLC/Recto/issues](https://github.com/Recto-LLC/Recto/issues).

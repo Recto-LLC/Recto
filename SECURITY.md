@@ -2,7 +2,8 @@
 
 **Report a vulnerability privately, never in a public issue.** Use GitHub's
 private reporting: open this repository's **Security** tab and choose **Report a
-vulnerability**. Only Recto's maintainers can see the report.
+vulnerability**. Only Recto's maintainers can see the report. If you cannot use
+GitHub, email support@rectophone.com instead.
 
 Recto is maintained by **Recto LLC**.
 

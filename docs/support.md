@@ -6,6 +6,8 @@ permalink: /support/
 
 # Support — Recto Agentic
 
+For support, email [support@rectophone.com](mailto:support@rectophone.com).
+
 For bug reports, questions, and feature requests:
 [https://github.com/Recto-LLC/Recto/issues](https://github.com/Recto-LLC/Recto/issues)
 

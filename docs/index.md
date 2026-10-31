@@ -65,7 +65,7 @@ integrate a service.
 
 ## Contact
 
-For privacy questions or app support: [open an issue](https://github.com/Recto-LLC/Recto/issues) on the GitHub repository.
+For privacy questions or app support: email [support@rectophone.com](mailto:support@rectophone.com), or [open an issue](https://github.com/Recto-LLC/Recto/issues) on the GitHub repository.
 
 To report a vulnerability, do it privately, never in an issue:
 [SECURITY.md](https://github.com/Recto-LLC/Recto/blob/main/SECURITY.md).
