@@ -593,3 +593,99 @@ class TestRule15PairRecordCarriesAHandle:
         assert "HTTPError 409" in logged
         assert "MARKER-user-data-x7" not in logged
         assert "headers=" not in logged and "body=" not in logged
+
+
+# ── THE MEMBER'S PHONE ID (2026-11-06) ────────────────────────────
+#
+# A consumer binds the pair's key to its user, and it cards that user's phone by the phone's id - which the relay never
+# forwarded, so a member's pair left the user "paired" (key bound) but with no phone to card. The relay now forwards
+# the id of the phone BOUND to (consumer, record.subject) by its member registration (hard rule 15.n): a fact this
+# bootloader verified when the member code was spent, never a value the pairing phone asserts. A pair with no bound
+# phone forwards no id, exactly as before.
+
+
+@pytest.fixture
+def member_bootloader(tmp_path: Path, fake_consumer):
+    """A bootloader whose state the test holds, so a member phone can register on it before the pair."""
+    state = StateStore(state_dir=tmp_path)
+    challenges = ChallengeStore(state=state)
+    url = fake_consumer["base_url"]
+    server = create_server(
+        bind_host="127.0.0.1", bind_port=0, state=state, bootloader_id=_BOOTLOADER_ID,
+        challenges=challenges, ssl_context=None, devices_pair_consumer_webhook_tokens={url: "tok"},
+    )
+    host, port = server.server_address
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield {"base_url": f"http://{host}:{port}", "state": state, "challenges": challenges, "consumer": url}
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5.0)
+
+
+def _register_member(ctx, consumer: str, user: str):
+    """A phone registers on a MEMBER code minted for (consumer, user's handle) - the binding the relay reads."""
+    from tests.test_bootloader_slots import Phone, _http
+
+    code, _ = ctx["challenges"].issue_member_pairing_code(binding=(consumer, _subject(user)))
+    status, chal = _http("GET", f"{ctx['base_url']}/v0.4/registration_challenge?code={code}")
+    assert status == 200, chal
+    member = Phone(f"phone of {user}")
+    status, body = member.register(ctx, challenge=chal["challenge_b64u"])
+    assert status in (200, 201), body
+    return member
+
+
+class TestDevicesPairForwardsTheBoundPhone:
+    def test_a_member_pair_relays_the_bound_phones_id(self, member_bootloader, fake_consumer, phone):
+        member = _register_member(member_bootloader, member_bootloader["consumer"], "user-1")
+        status, _ = _http_post_json(_pair_url(member_bootloader), _body(member_bootloader["consumer"], phone))
+        assert status == HTTPStatus.OK
+        assert fake_consumer["received"][0]["body"].get("phoneId") == member.ref
+
+    def test_an_unbound_pair_relays_no_phone_id(self, member_bootloader, fake_consumer, phone):
+        """The owner's phones hold no binding: their pair forwards exactly what it did."""
+        status, _ = _http_post_json(_pair_url(member_bootloader), _body(member_bootloader["consumer"], phone))
+        assert status == HTTPStatus.OK
+        assert "phoneId" not in fake_consumer["received"][0]["body"]
+
+    def test_a_phone_bound_to_another_member_is_not_relayed(self, member_bootloader, fake_consumer, phone):
+        _register_member(member_bootloader, member_bootloader["consumer"], "user-2")
+        status, _ = _http_post_json(_pair_url(member_bootloader), _body(member_bootloader["consumer"], phone))
+        assert status == HTTPStatus.OK
+        assert "phoneId" not in fake_consumer["received"][0]["body"]
+
+    def test_a_phone_bound_under_another_consumer_is_not_relayed(self, member_bootloader, fake_consumer, phone):
+        _register_member(member_bootloader, "https://other.example", "user-1")
+        status, _ = _http_post_json(_pair_url(member_bootloader), _body(member_bootloader["consumer"], phone))
+        assert status == HTTPStatus.OK
+        assert "phoneId" not in fake_consumer["received"][0]["body"]
+
+    @pytest.mark.parametrize("bound_as, paired_as", [("", "/"), ("/", "")])
+    def test_a_trailing_slash_on_either_side_still_finds_the_bound_phone(self, member_bootloader, fake_consumer, phone,
+                                                                         bound_as, paired_as):
+        url = member_bootloader["consumer"]
+        member = _register_member(member_bootloader, url + bound_as, "user-1")
+        status, _ = _http_post_json(_pair_url(member_bootloader), _body(url + paired_as, phone))
+        assert status == HTTPStatus.OK
+        assert fake_consumer["received"][0]["body"].get("phoneId") == member.ref
+
+    def test_a_refused_pair_relays_nothing_even_for_a_bound_member(self, member_bootloader, fake_consumer, phone):
+        _register_member(member_bootloader, member_bootloader["consumer"], "user-1")
+        other_priv, _ = _keypair()
+        rec = _record(phone)
+        status, body = _http_post_json(_pair_url(member_bootloader),
+                                       _body(member_bootloader["consumer"], phone, rec, _grant(phone, rec, priv=other_priv)))
+        assert status == HTTPStatus.FORBIDDEN and body["error"] == "grant_signature_invalid"
+        assert fake_consumer["received"] == []
+
+    def test_two_phones_bound_to_one_member_name_neither(self, member_bootloader, fake_consumer, phone):
+        """One phone bound with the slash and one without is no binding the relay can name: it forwards no id."""
+        url = member_bootloader["consumer"]
+        _register_member(member_bootloader, url, "user-1")
+        _register_member(member_bootloader, url + "/", "user-1")
+        status, _ = _http_post_json(_pair_url(member_bootloader), _body(url, phone))
+        assert status == HTTPStatus.OK
+        assert "phoneId" not in fake_consumer["received"][0]["body"]

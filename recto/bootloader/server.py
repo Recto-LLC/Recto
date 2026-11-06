@@ -4596,6 +4596,15 @@ class BootloaderHandler(BaseHTTPRequestHandler):
     # 2026-05-19)
     # ------------------------------------------------------------------
 
+    def _phone_bound_for_pair(self, consumer_url: str, subject: str) -> Any:
+        """The ONE phone bound to (consumer, subject), the consumer compared without a trailing slash on either side
+        (the relay forgives the slash in its consumer registry the same way), or None. Two phones matching - one bound
+        with the slash, one without - is not a binding this relay can name, so it names neither."""
+        want = consumer_url.strip().rstrip("/")
+        bound = [p for p in self.config.state.list_phones()
+                 if any(c.strip().rstrip("/") == want and s == subject for c, s in p.member_bindings)]
+        return bound[0] if len(bound) == 1 else None
+
     def _handle_devices_pair(self, body: dict[str, Any]) -> None:
         """Verify a device-pairing record + grant, then relay to the consumer.
 
@@ -4619,7 +4628,10 @@ class BootloaderHandler(BaseHTTPRequestHandler):
         ``{code, masterPubkeyHex, capabilityJws, record, fingerprint,
         bootloaderJws}`` to ``{consumer}/api/v1/devices/pairing/complete``
         with the consumer's registered webhook token and relays the
-        response verbatim. ``bootloaderJws`` is this bootloader's signed
+        response verbatim. When ONE phone is bound to (consumer,
+        record.subject) by its member registration, the body also carries
+        ``phoneId`` = that phone's id, so the consumer can card its member's
+        phone; a pair with no bound phone forwards no ``phoneId``. ``bootloaderJws`` is this bootloader's signed
         attestation of the act (``devices:pair_result``, the fingerprint
         in scope, 300 s, single-use) when a signing key is configured;
         consumers that pin the key need no webhook token. No auth on the
@@ -4805,14 +4817,23 @@ class BootloaderHandler(BaseHTTPRequestHandler):
         if relay_base is None:
             relay_base = normalized_url
         forward_url = relay_base + "/api/v1/devices/pairing/complete"
-        forward_body_bytes = json.dumps({
+        forward = {
             "code": pairing_code,
             "masterPubkeyHex": user_pubkey_hex,
             "capabilityJws": user_jws,
             "record": record.to_dict(),
             "fingerprint": fingerprint,
             "bootloaderJws": bootloader_jws,
-        }).encode("utf-8")
+        }
+        # THE MEMBER'S PHONE (2026-11-06). The consumer cards its user's phone by the phone's id, and this relay is
+        # where a member's pair reaches it - without the id the user is paired (key bound) but has no phone to card.
+        # The id is the phone BOUND to (consumer, subject) by its member registration (hard rule 15.n): verified when
+        # the member code was spent, never a value the pairing phone asserts (the grant's iss is unchecked). No bound
+        # phone - the owner's slots hold no binding - forwards no id, exactly as before.
+        bound = self._phone_bound_for_pair(normalized_url, _normalize_subject(record.subject))
+        if bound is not None:
+            forward["phoneId"] = bound.phone_id
+        forward_body_bytes = json.dumps(forward).encode("utf-8")
 
         request = urllib.request.Request(
             forward_url,
