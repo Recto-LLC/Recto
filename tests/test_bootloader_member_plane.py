@@ -136,3 +136,117 @@ def test_a_member_code_answers_no_slot_question_by_name(ctx) -> None:
     status, body = member.register(ctx, "primary", replace=owner.ref, challenge=_member_challenge(ctx, user_id="member-1"))
     assert status == 400 and "answers no slot question" in json.dumps(body), (status, body)
     assert ctx["state"].get_phone(owner.ref) is not None
+
+
+# --------------------------------------------------------------------------
+# CARDING BY PLANE (2026-11-06, the order's change 2). A member phone answers only a request its consumer's agent makes
+# for THAT member: the request names {consumer, subject} in member_of, and the pair is one of the phone's
+# member_bindings. A request that names no member, or another one, is refused by name before anything is queued - a
+# member phone never answers a business-plane request. The business slots card exactly as before.
+# --------------------------------------------------------------------------
+
+
+def _card(ctx, phone_ref: str, member_of: Any = None, *, omit: bool = False) -> tuple[int, dict[str, Any]]:
+    """The consumer's agent asks for a capability on one phone; ``member_of`` rides beside the claims."""
+    from tests.test_bootloader_capability import _claims_dict
+
+    body: dict[str, Any] = {"phone_id": phone_ref, "claims": _claims_dict(), "operation_description": "member plane"}
+    if not omit:
+        body["member_of"] = member_of
+    return _http("POST", f"{ctx['base_url']}/v0.4/capability/request", body,
+                 headers={"X-Recto-Agent-Id": AGENT_ID, "X-Recto-Agent-Token": AGENT_TOKEN})
+
+
+def _member(ctx, user_id: str = "member-1") -> Phone:
+    """A member phone registered on a member code for ``user_id``, beside an owner who holds primary."""
+    if not _business_slot_holders(ctx):
+        assert Phone("owner pixel").register(ctx, "primary")[0] in (200, 201)
+    member = Phone(f"phone of {user_id}")
+    status, body = member.register(ctx, challenge=_member_challenge(ctx, user_id=user_id))
+    assert status in (200, 201), body
+    return member
+
+
+def _queued(ctx, phone_ref: str) -> int:
+    return len(ctx["state"].list_pending_for_phone(phone_ref))
+
+
+def test_a_member_phone_carded_for_its_own_member_is_queued(ctx) -> None:
+    """POSITIVE CONTROL: the consumer's agent cards the member's phone for that member."""
+    member = _member(ctx)
+    status, body = _card(ctx, member.ref, {"consumer": CONSUMER, "subject": _subject("member-1")})
+    assert status == 201, body
+    assert _queued(ctx, member.ref) == 1
+
+
+def test_a_member_phone_carded_for_another_member_is_refused_by_name(ctx) -> None:
+    """A consumer cannot card a member phone registered for another of its users."""
+    member = _member(ctx)
+    status, body = _card(ctx, member.ref, {"consumer": CONSUMER, "subject": _subject("member-2")})
+    assert status == 403 and body.get("error") == "member_binding_mismatch", (status, body)
+    assert _queued(ctx, member.ref) == 0
+
+
+def test_a_member_phone_carded_for_another_consumer_is_refused_by_name(ctx) -> None:
+    """The same subject handle under another consumer is another member: the pair is compared whole."""
+    member = _member(ctx)
+    status, body = _card(ctx, member.ref, {"consumer": "https://other.example", "subject": _subject("member-1")})
+    assert status == 403 and body.get("error") == "member_binding_mismatch", (status, body)
+    assert _queued(ctx, member.ref) == 0
+
+
+def test_a_member_phone_never_answers_a_business_plane_request(ctx) -> None:
+    """A request that names no member is the business plane's; a member phone is never carded for one."""
+    member = _member(ctx)
+    status, body = _card(ctx, member.ref, omit=True)
+    assert status == 403 and body.get("error") == "member_binding_required", (status, body)
+    assert _queued(ctx, member.ref) == 0
+
+
+@pytest.mark.parametrize("member_of, error", [
+    ({"consumer": CONSUMER}, "member_of_invalid"),
+    ({"subject": _subject("member-1")}, "member_of_invalid"),
+    ({"consumer": "  ", "subject": _subject("member-1")}, "member_of_invalid"),
+    ("member-1", "member_of_invalid"),
+    ({"consumer": CONSUMER, "subject": ""}, "subject_invalid"),
+    ({"consumer": CONSUMER, "subject": "member-1"}, "subject_invalid"),
+    (None, "member_binding_required"),
+])
+def test_a_member_phone_carded_with_no_subject_is_refused(ctx, member_of: Any, error: str) -> None:
+    """No subject, a subject in any shape but the opaque handle's, or no consumer: refused by name, nothing queued."""
+    member = _member(ctx)
+    status, body = _card(ctx, member.ref, member_of)
+    assert status in (400, 403) and body.get("error") == error, (status, body)
+    assert _queued(ctx, member.ref) == 0
+
+
+def test_a_member_phone_whose_binding_moved_away_answers_no_one(ctx) -> None:
+    """A member phone left with no binding (its member moved to another phone) is carded for nobody."""
+    from dataclasses import replace as _replace
+
+    member = _member(ctx)
+    record = ctx["state"].get_phone(member.ref)
+    ctx["state"].register_phone(_replace(record, member_bindings=()))
+    status, body = _card(ctx, member.ref, {"consumer": CONSUMER, "subject": _subject("member-1")})
+    assert status == 403 and body.get("error") == "member_binding_mismatch", (status, body)
+    assert _queued(ctx, member.ref) == 0
+
+
+def test_an_owner_slot_phone_is_carded_as_before(ctx) -> None:
+    """The business slots are unchanged: no member_of needed, and one sent is not read (the owner's own consumer user
+    may ask on the owner's phone; the business plane's authority is the owner's own tap)."""
+    owner = Phone("owner pixel")
+    assert owner.register(ctx, "primary")[0] in (200, 201)
+    assert _card(ctx, owner.ref, omit=True)[0] == 201
+    assert _card(ctx, owner.ref, {"consumer": CONSUMER, "subject": _subject("member-1")})[0] == 201
+    assert _card(ctx, owner.ref, "not even an object")[0] == 201
+    assert _queued(ctx, owner.ref) == 3
+
+
+def test_the_owners_phone_holding_a_member_binding_keeps_its_business_carding(ctx) -> None:
+    """The owner's phone that scanned a member code keeps its slot AND its business-plane cards."""
+    owner = Phone("owner pixel")
+    assert owner.register(ctx, "primary")[0] in (200, 201)
+    assert owner.register(ctx, challenge=_member_challenge(ctx, user_id="member-1"))[0] in (200, 201)
+    assert _card(ctx, owner.ref, omit=True)[0] == 201
+    assert _queued(ctx, owner.ref) == 1

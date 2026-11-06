@@ -296,6 +296,15 @@ X-Recto-Agent-Token: <64-hex>
 The body carries the claim you want signed (schema below) and a `purpose` string
 the operator will read on their phone.
 
+A request for one of your MEMBERS' phones (a phone that paired on a member
+code, beside the owner's two slots) also names the member it is for, as the
+code did: `"member_of": {"consumer": "<your base url>", "subject": "<the
+member's opaque handle>"}`. The bootloader cards a member phone only when that
+pair is one of the phone's bindings, and refuses by name otherwise
+(`member_binding_required`, `member_binding_mismatch`, `member_of_invalid`,
+`subject_invalid`): a member phone never answers a request made for anyone
+else. The owner's slot phones are carded as before.
+
 ### 5. Poll for the result
 
 ```http

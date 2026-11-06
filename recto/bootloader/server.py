@@ -4238,6 +4238,46 @@ class BootloaderHandler(BaseHTTPRequestHandler):
     # POST /v0.4/capability/request  (Phase 5 Wave B)
     # ------------------------------------------------------------------
 
+    def _member_card_admitted(self, phone: Any, member_of: Any) -> bool:
+        """CARDING BY PLANE (2026-11-06; the member plane's second half). A phone outside the business slots is a
+        consumer's MEMBER phone, and it answers only a request its consumer makes for THAT member: the body names
+        ``member_of: {"consumer": <base url>, "subject": <opaque handle>}`` - the pair the member code carried - and
+        the pair is one of the phone's ``member_bindings``. A request that names no member is the business plane's
+        and never reaches a member phone. True when the card may be raised; otherwise the refusal is sent, by name,
+        and nothing is queued. The business slots never come here (their carding is unchanged)."""
+        if member_of is None:
+            self._send_json(HTTPStatus.FORBIDDEN, {
+                "error": "member_binding_required",
+                "detail": "this phone is on the member plane: a request for it names member_of {consumer, subject} - "
+                          "a member phone never answers a business-plane request",
+            })
+            return False
+        consumer = member_of.get("consumer") if isinstance(member_of, dict) else None
+        if not isinstance(consumer, str) or not consumer.strip() or "subject" not in member_of:
+            self._send_json(HTTPStatus.BAD_REQUEST, {
+                "error": "member_of_invalid",
+                "detail": "member_of must be {\"consumer\": <base url>, \"subject\": <opaque handle>}",
+            })
+            return False
+        from recto.subject_handle import normalize_subject as _normalize_subject
+        try:
+            subject = _normalize_subject(member_of["subject"])
+        except ValueError:
+            self._send_json(HTTPStatus.BAD_REQUEST, {
+                "error": "subject_invalid",
+                "detail": "member_of.subject must be an opaque handle of 43 base64url characters",
+            })
+            return False
+        if (consumer.strip(), subject) not in phone.member_bindings:
+            # The refusal names no binding the phone holds: the asker learns only that this pair is not one of them.
+            self._send_json(HTTPStatus.FORBIDDEN, {
+                "error": "member_binding_mismatch",
+                "detail": "this member phone is not bound to that consumer and subject; a member phone is carded "
+                          "only for its own member",
+            })
+            return False
+        return True
+
     def _handle_capability_request(self, body: dict[str, Any]) -> None:
         """Queue a capability request for operator approval.
 
@@ -4292,8 +4332,11 @@ class BootloaderHandler(BaseHTTPRequestHandler):
         phone_id = body.get("phone_id", "")
         if not phone_id or not isinstance(phone_id, str):
             raise BootloaderError("phone_id required in capability_request body")
-        if cfg.state.get_phone(phone_id) is None:
+        target = cfg.state.get_phone(phone_id)
+        if target is None:
             raise UnknownPhoneError(f"phone_id {phone_id!r} not registered")
+        if target.slot not in SLOTS and not self._member_card_admitted(target, body.get("member_of")):
+            return
         claims_raw = body.get("claims")
         if not isinstance(claims_raw, dict):
             raise BootloaderError(
