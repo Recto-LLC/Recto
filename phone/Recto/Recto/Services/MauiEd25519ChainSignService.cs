@@ -50,6 +50,14 @@ public sealed class MauiEd25519ChainSignService : IEd25519ChainSignService
     // "default" is "recto.phone.eth.mnemonic.default".
     private const string MnemonicPrefix = "recto.phone.eth.mnemonic.";
 
+    /// <summary>A sign reads the recovery phrase and never creates one (2026-11-07): an
+    /// empty read is refused by name, so a phrase the platform store could not read is
+    /// never replaced by a new one. Pairing a service or a restore in Settings provisions
+    /// it; <see cref="EnsureMnemonicAsync"/> is for those explicit acts only.</summary>
+    private static Error NoRecoveryPhrase(string alias) => Error.NotFound(
+        $"No recovery phrase is readable at '{alias}', so nothing was signed. "
+        + "Pair a service or restore the phrase in Settings first.");
+
     public async Task<Result<EdAccount>> EnsureMnemonicAsync(
         string alias,
         string chain,
@@ -156,19 +164,7 @@ public sealed class MauiEd25519ChainSignService : IEd25519ChainSignService
                 .ConfigureAwait(false);
             if (string.IsNullOrEmpty(mnemonic))
             {
-                var ensure = await EnsureMnemonicAsync(alias, chain, derivationPath, ct).ConfigureAwait(false);
-                if (ensure.IsFailure)
-                {
-                    return Result.Failure<EdSignResult>(ensure.Error);
-                }
-                mnemonic = await ResilientStorage
-                    .GetAsync(MnemonicPrefix + alias)
-                    .ConfigureAwait(false);
-                if (string.IsNullOrEmpty(mnemonic))
-                {
-                    return Result.Failure<EdSignResult>(Error.Failure(
-                        "EnsureMnemonicAsync succeeded but no mnemonic was persisted."));
-                }
+                return Result.Failure<EdSignResult>(NoRecoveryPhrase(alias));
             }
 
             seed = Bip39.MnemonicToSeed(mnemonic, passphrase: string.Empty);

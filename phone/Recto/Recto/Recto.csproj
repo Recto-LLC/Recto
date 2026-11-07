@@ -79,7 +79,10 @@
 		     list, a request body by its size and a refusal by its error code (7cae0fb); the store
 		     listing's support and privacy links move to rectophone.com, which needs a new store
 		     version. -->
-		<ApplicationDisplayVersion>1.2.1</ApplicationDisplayVersion>
+		<!-- 1.2.1 -> 1.2.2 (2026-11-07): a profile card's master signature is made only over a
+		     signing input the phone has read back against the card, and a sign, an address on a card
+		     or a revoke never creates a recovery phrase (pairing a service or a restore does). -->
+		<ApplicationDisplayVersion>1.2.2</ApplicationDisplayVersion>
 		<!-- Build 5 (2026-06-02): explicit Version pin to fix NU1105.
 		     MAUI auto-derives PackageVersion from ApplicationDisplayVersion
 		     on some TFMs but leaves the default 1.0.0 on others, producing:
@@ -366,8 +369,9 @@
 		     16 -> 17 (2026-10-19): Build 17 (1.1.2), per Apple's same-build
 		     rule and Play's monotonic versionCode.
 		     17 -> 18 (2026-10-24): Build 18 (1.2.0), the same two rules.
-		     18 -> 19 (2026-10-30): Build 19 (1.2.1), the same two rules. -->
-		<ApplicationVersion>19</ApplicationVersion>
+		     18 -> 19 (2026-10-30): Build 19 (1.2.1), the same two rules.
+		     19 -> 20 (2026-11-07): Build 20 (1.2.2), the same two rules. -->
+		<ApplicationVersion>20</ApplicationVersion>
 		<!-- Mirror ApplicationDisplayVersion + ApplicationVersion into the
 		     .NET assembly metadata so System.Reflection at runtime can
 		     read the build number. MAUI's <ApplicationVersion> ONLY

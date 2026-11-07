@@ -146,10 +146,11 @@ public interface IEthSignService
     /// two surfaces.
     /// </para>
     /// <para>
-    /// Auto-provisions the mnemonic on first call (matching the
-    /// existing <see cref="SignPersonalSignAsync"/> behavior) so the
-    /// operator's first capability_request just works without a
-    /// separate <see cref="EnsureMnemonicAsync"/> bootstrapping step.
+    /// Never provisions the mnemonic (2026-11-07): like every sign path,
+    /// an empty read fails <c>NotFound</c> and nothing is signed, so a
+    /// phrase the platform store could not read is never replaced by a
+    /// new one. <see cref="EnsureMnemonicAsync"/> is for the explicit
+    /// acts that create a phrase (pairing a service).
     /// </para>
     /// </summary>
     /// <param name="alias">Mnemonic alias in SecureStorage.</param>

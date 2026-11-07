@@ -4506,42 +4506,30 @@
         }
         var childPubkeyHex = BytesToHexLower(childPubkeyBytes);
 
-        // 2. Reconstruct the FULL canonical JSON by parsing the
-        // queue-time partial + injecting child_pubkey_hex + re-
-        // canonicalizing via the same encoder the bootloader's
-        // verify path uses. Byte-parity with Python's
-        // recto.capability.jwt._canonical_json is the contract.
-        byte[] partialBytes;
-        try { partialBytes = Base64UrlDecode(req.Context.CapPayloadB64!); }
-        catch (Exception ex)
+        // 2. Read the queue-time partial back against this card
+        // (ProfileSigningInput.ProfileCreate): exactly the bootloader's
+        // canonical candidate fields, each the card's own, naming this
+        // phone's own master key and hashing to payload_hash_b64u; then
+        // child_pubkey_hex is added and the whole re-canonicalized
+        // (byte-parity with Python's recto.capability.jwt._canonical_json
+        // is the contract). Anything else is refused and nothing is
+        // signed.
+        var masterDerivationPath = "m/44'/60'/0'/0/0";
+        var ownMaster = await EthSigner.DerivePubkeyAtPathAsync(
+            EthKeyAlias, masterDerivationPath, CancellationToken.None);
+        if (ownMaster.IsFailure)
         {
-            _pollingError = $"Could not decode cap_payload_b64: {ex.Message}";
+            _pollingError = ownMaster.Error.Message;
             return;
         }
-        Dictionary<string, object?> partialDict;
-        try
+        var inputCheck = Recto.Shared.Capability.ProfileSigningInput.ProfileCreate(
+            req, BytesToHexLower(ownMaster.Value), childPubkeyHex);
+        if (!inputCheck.Ok)
         {
-            partialDict = ParsePartialCanonicalToDict(partialBytes);
-        }
-        catch (Exception ex)
-        {
-            _pollingError = $"profile_create cap_payload_b64 not valid JSON object: {ex.Message}";
+            _pollingError = inputCheck.Refusal;
             return;
         }
-        if (partialDict.ContainsKey("child_pubkey_hex"))
-        {
-            _pollingError = "profile_create queue-time payload unexpectedly already contains child_pubkey_hex.";
-            return;
-        }
-        partialDict["child_pubkey_hex"] = childPubkeyHex;
-        byte[] fullCanonical;
-        try { fullCanonical = Recto.Shared.Capability.CanonicalJson.Encode(partialDict); }
-        catch (Exception ex)
-        {
-            _pollingError = $"Failed to re-canonicalize profile_create signing input: {ex.Message}";
-            return;
-        }
-        var fullDigest = System.Security.Cryptography.SHA256.HashData(fullCanonical);
+        var fullDigest = inputCheck.Digest!;
 
         // 3. Sign full digest with operator's master key (same path
         // capability_request uses -- one operator identity, both
@@ -4551,7 +4539,6 @@
         _processingText = "Signing master attestation (ES256K)...";
         StateHasChanged();
         await Task.Yield();
-        var masterDerivationPath = "m/44'/60'/0'/0/0";
         var masterSignResult = await EthSigner.SignDigestAsync(
             EthKeyAlias, masterDerivationPath, fullDigest, CancellationToken.None);
         if (masterSignResult.IsFailure)
@@ -4618,8 +4605,10 @@
         // phone signs SHA-256 of those exact bytes (no field needs
         // injection at signing time, unlike profile_create's
         // child_pubkey_hex flow). Steps:
-        //   1. Decode cap_payload_b64 -> raw bytes
-        //   2. SHA-256 the bytes -> 32-byte digest
+        //   1. Decode cap_payload_b64 and read it back against this
+        //      card (ProfileSigningInput.AddDevice) - refuse on any
+        //      difference
+        //   2. SHA-256 the checked bytes -> 32-byte digest
         //   3. Sign the digest with the operator's MASTER key (same
         //      m/44'/60'/0'/0/0 identity as profile_create's master
         //      attestation -- one operator, multiple surfaces).
@@ -4652,17 +4641,28 @@
             return;
         }
 
-        // 1. Decode cap_payload_b64 -> raw signing-input bytes.
-        byte[] signingInputBytes;
-        try { signingInputBytes = Base64UrlDecode(req.Context.CapPayloadB64!); }
-        catch (Exception ex)
+        // 1-2. Read the signing input back against this card before the
+        // master key signs (ProfileSigningInput.AddDevice): exactly the
+        // bootloader's canonical fields for an add-device card, naming
+        // this card's profile, new phone, request and time and this
+        // phone's own master key, and hashing to payload_hash_b64u.
+        // Anything else is refused and nothing is signed.
+        var masterDerivationPath = "m/44'/60'/0'/0/0";
+        var ownMaster = await EthSigner.DerivePubkeyAtPathAsync(
+            EthKeyAlias, masterDerivationPath, CancellationToken.None);
+        if (ownMaster.IsFailure)
         {
-            _pollingError = $"Could not decode cap_payload_b64: {ex.Message}";
+            _pollingError = ownMaster.Error.Message;
             return;
         }
-
-        // 2. SHA-256 -> 32-byte digest.
-        var fullDigest = System.Security.Cryptography.SHA256.HashData(signingInputBytes);
+        var inputCheck = Recto.Shared.Capability.ProfileSigningInput.AddDevice(
+            req, BytesToHexLower(ownMaster.Value));
+        if (!inputCheck.Ok)
+        {
+            _pollingError = inputCheck.Refusal;
+            return;
+        }
+        var fullDigest = inputCheck.Digest!;
 
         // 3. Sign digest with operator master key (m/44'/60'/0'/0/0,
         // same identity as profile_create's master attestation +
@@ -4672,7 +4672,6 @@
         _processingText = "Signing master attestation (ES256K)...";
         StateHasChanged();
         await Task.Yield();
-        var masterDerivationPath = "m/44'/60'/0'/0/0";
         var masterSignResult = await EthSigner.SignDigestAsync(
             EthKeyAlias, masterDerivationPath, fullDigest, CancellationToken.None);
         if (masterSignResult.IsFailure)
@@ -4739,8 +4738,10 @@
         // Steps:
         //   1. Validate cap_payload_b64 + payload_hash_b64u + revdev_*
         //      fields present.
-        //   2. Decode cap_payload_b64 -> raw signing-input bytes.
-        //   3. SHA-256 -> 32-byte digest.
+        //   2. Decode cap_payload_b64 and read it back against this
+        //      card (ProfileSigningInput.RevokeDevice) - refuse on any
+        //      difference.
+        //   3. SHA-256 the checked bytes -> 32-byte digest.
         //   4. Sign digest with operator master key (m/44'/60'/0'/0/0).
         //   5. Sign Ed25519 paired-phone envelope over
         //      payload_hash_b64u.
@@ -4771,23 +4772,34 @@
             return;
         }
 
-        // 1. Decode cap_payload_b64.
-        byte[] signingInputBytes;
-        try { signingInputBytes = Base64UrlDecode(req.Context.CapPayloadB64!); }
-        catch (Exception ex)
+        // 1-2. Read the signing input back against this card before the
+        // master key signs (ProfileSigningInput.RevokeDevice): exactly
+        // the bootloader's canonical fields for a revoke-device card,
+        // naming this card's profile, phone to revoke, request and time
+        // and this phone's own master key, and hashing to
+        // payload_hash_b64u. Anything else is refused and nothing is
+        // signed.
+        var masterDerivationPath = "m/44'/60'/0'/0/0";
+        var ownMaster = await EthSigner.DerivePubkeyAtPathAsync(
+            EthKeyAlias, masterDerivationPath, CancellationToken.None);
+        if (ownMaster.IsFailure)
         {
-            _pollingError = $"Could not decode cap_payload_b64: {ex.Message}";
+            _pollingError = ownMaster.Error.Message;
             return;
         }
-
-        // 2. SHA-256.
-        var fullDigest = System.Security.Cryptography.SHA256.HashData(signingInputBytes);
+        var inputCheck = Recto.Shared.Capability.ProfileSigningInput.RevokeDevice(
+            req, BytesToHexLower(ownMaster.Value));
+        if (!inputCheck.Ok)
+        {
+            _pollingError = inputCheck.Refusal;
+            return;
+        }
+        var fullDigest = inputCheck.Digest!;
 
         // 3. Sign digest with operator master key.
         _processingText = "Signing master attestation (ES256K)...";
         StateHasChanged();
         await Task.Yield();
-        var masterDerivationPath = "m/44'/60'/0'/0/0";
         var masterSignResult = await EthSigner.SignDigestAsync(
             EthKeyAlias, masterDerivationPath, fullDigest, CancellationToken.None);
         if (masterSignResult.IsFailure)
@@ -4836,54 +4848,6 @@
             return;
         }
         await RefreshPendingAsync(CancellationToken.None);
-    }
-
-    /// <summary>
-    /// Phase 2.0.C wave C.3 helper: parse the queue-time partial
-    /// canonical JSON from cap_payload_b64 back into a string-keyed
-    /// dict compatible with <c>CanonicalJson.Encode</c>. The dict
-    /// gains <c>child_pubkey_hex</c> in the calling flow before
-    /// re-encoding. Supports the JSON value types Recto's
-    /// <c>_canonical_json</c> emits for the candidate-fields shape:
-    /// string, long, null, dict-of-string-to-supported. Arrays /
-    /// nested objects fall through unchanged since profile_create's
-    /// candidate fields don't currently contain either -- if a
-    /// future schema extension uses them, this helper grows the
-    /// case alongside <see cref="CanonicalJson.WriteValue"/>'s
-    /// supported-type list.
-    /// </summary>
-    private static Dictionary<string, object?> ParsePartialCanonicalToDict(byte[] partialBytes)
-    {
-        using var doc = System.Text.Json.JsonDocument.Parse(partialBytes);
-        if (doc.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object)
-        {
-            throw new InvalidOperationException(
-                $"Expected JSON object at root, got {doc.RootElement.ValueKind}.");
-        }
-        var dict = new Dictionary<string, object?>(StringComparer.Ordinal);
-        foreach (var prop in doc.RootElement.EnumerateObject())
-        {
-            dict[prop.Name] = JsonElementToCanonicalValue(prop.Value);
-        }
-        return dict;
-    }
-
-    private static object? JsonElementToCanonicalValue(System.Text.Json.JsonElement elem)
-    {
-        return elem.ValueKind switch
-        {
-            System.Text.Json.JsonValueKind.Null => null,
-            System.Text.Json.JsonValueKind.True => true,
-            System.Text.Json.JsonValueKind.False => false,
-            System.Text.Json.JsonValueKind.String => elem.GetString(),
-            System.Text.Json.JsonValueKind.Number => elem.TryGetInt64(out var l) ? (object)l
-                : throw new InvalidOperationException(
-                    $"Numeric value {elem} is not a valid int64 for canonical JSON."),
-            _ => throw new InvalidOperationException(
-                $"Unsupported JSON value kind {elem.ValueKind} in profile_create "
-                + "partial canonical JSON. Recto's canonical encoder only handles "
-                + "string / int64 / bool / null at the candidate-fields layer."),
-        };
     }
 
     private static string BytesToHexLower(byte[] bytes)
@@ -5629,7 +5593,8 @@
             var path = string.IsNullOrEmpty(req.Context.EthDerivationPath)
                 ? "m/44'/60'/0'/0/0"
                 : req.Context.EthDerivationPath!;
-            var account = await EthSigner.EnsureMnemonicAsync(EthKeyAlias, path, ct);
+            // A read, never a provision: a phone with no readable phrase shows no address.
+            var account = await EthSigner.GetAccountAsync(EthKeyAlias, path, ct);
             if (account.IsSuccess)
             {
                 newMap[req.RequestId] = account.Value.Address;
@@ -5660,7 +5625,7 @@
             var network = string.IsNullOrEmpty(req.Context.BtcNetwork)
                 ? "mainnet"
                 : req.Context.BtcNetwork!;
-            var account = await BtcSigner.EnsureMnemonicAsync(BtcKeyAlias, path, network, coin, ct);
+            var account = await BtcSigner.GetAccountAsync(BtcKeyAlias, path, network, coin, ct);
             if (account.IsSuccess)
             {
                 newMap[req.RequestId] = account.Value.Address;
@@ -5688,7 +5653,7 @@
             var path = string.IsNullOrEmpty(req.Context.EdDerivationPath)
                 ? _edDefaultPathForChain(chain)
                 : req.Context.EdDerivationPath!;
-            var account = await EdSigner.EnsureMnemonicAsync(EdKeyAlias, chain, path, ct);
+            var account = await EdSigner.GetAccountAsync(EdKeyAlias, chain, path, ct);
             if (account.IsSuccess)
             {
                 newMap[req.RequestId] = account.Value.Address;
@@ -5713,7 +5678,7 @@
             var path = string.IsNullOrEmpty(req.Context.TronDerivationPath)
                 ? "m/44'/195'/0'/0/0"
                 : req.Context.TronDerivationPath!;
-            var account = await TronSigner.EnsureMnemonicAsync(TronKeyAlias, path, ct);
+            var account = await TronSigner.GetAccountAsync(TronKeyAlias, path, ct);
             if (account.IsSuccess)
             {
                 newMap[req.RequestId] = account.Value.Address;
@@ -6273,13 +6238,9 @@
         _unpairServiceBusy = true;
         StateHasChanged();
 
+        // A revoke names the key the binding holds, so it reads the phrase and never
+        // provisions one: DerivePubkeyAtPathAsync refuses by name when none is readable.
         const string masterPath = "m/44'/60'/0'/0/0";
-        var ensureResult = await EthSigner.EnsureMnemonicAsync(
-            EthKeyAlias, masterPath, CancellationToken.None);
-        if (ensureResult.IsFailure)
-        {
-            return $"Couldn't access your signing key: {ensureResult.Error.Message}";
-        }
         var pubkeyResult = await EthSigner.DerivePubkeyAtPathAsync(
             EthKeyAlias, masterPath, CancellationToken.None);
         if (pubkeyResult.IsFailure)

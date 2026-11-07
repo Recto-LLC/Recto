@@ -63,6 +63,14 @@ public sealed class MauiEthSignService : IEthSignService
 {
     private const string MnemonicPrefix = "recto.phone.eth.mnemonic.";
 
+    /// <summary>A sign reads the recovery phrase and never creates one (2026-11-07): an
+    /// empty read is refused by name, so a phrase the platform store could not read is
+    /// never replaced by a new one. Pairing a service or a restore in Settings provisions
+    /// it; <see cref="EnsureMnemonicAsync"/> is for those explicit acts only.</summary>
+    private static Error NoRecoveryPhrase(string alias) => Error.NotFound(
+        $"No recovery phrase is readable at '{alias}', so nothing was signed. "
+        + "Pair a service or restore the phrase in Settings first.");
+
     public async Task<Result<EthAccount>> EnsureMnemonicAsync(
         string alias,
         string derivationPath,
@@ -159,27 +167,14 @@ public sealed class MauiEthSignService : IEthSignService
         Bip32.ExtendedKey? leaf = null;
         try
         {
-            // Auto-provision on first sign so the operator's first ETH
-            // request just works (matches the prior single-key behavior).
-            // Subsequent calls re-read the persisted mnemonic.
+            // A sign reads the phrase; an empty read is refused by name
+            // (NoRecoveryPhrase), never answered with a new phrase.
             var mnemonic = await ResilientStorage
                 .GetAsync(MnemonicPrefix + alias)
                 .ConfigureAwait(false);
             if (string.IsNullOrEmpty(mnemonic))
             {
-                var ensure = await EnsureMnemonicAsync(alias, derivationPath, ct).ConfigureAwait(false);
-                if (ensure.IsFailure)
-                {
-                    return Result.Failure<string>(ensure.Error);
-                }
-                mnemonic = await ResilientStorage
-                    .GetAsync(MnemonicPrefix + alias)
-                    .ConfigureAwait(false);
-                if (string.IsNullOrEmpty(mnemonic))
-                {
-                    return Result.Failure<string>(Error.Failure(
-                        "EnsureMnemonicAsync succeeded but no mnemonic was persisted."));
-                }
+                return Result.Failure<string>(NoRecoveryPhrase(alias));
             }
 
             // Derive the per-path private key on the fly. No private-key
@@ -248,19 +243,7 @@ public sealed class MauiEthSignService : IEthSignService
                 .ConfigureAwait(false);
             if (string.IsNullOrEmpty(mnemonic))
             {
-                var ensure = await EnsureMnemonicAsync(alias, derivationPath, ct).ConfigureAwait(false);
-                if (ensure.IsFailure)
-                {
-                    return Result.Failure<string>(ensure.Error);
-                }
-                mnemonic = await ResilientStorage
-                    .GetAsync(MnemonicPrefix + alias)
-                    .ConfigureAwait(false);
-                if (string.IsNullOrEmpty(mnemonic))
-                {
-                    return Result.Failure<string>(Error.Failure(
-                        "EnsureMnemonicAsync succeeded but no mnemonic was persisted."));
-                }
+                return Result.Failure<string>(NoRecoveryPhrase(alias));
             }
 
             seed = Bip39.MnemonicToSeed(mnemonic, passphrase: string.Empty);
@@ -314,19 +297,7 @@ public sealed class MauiEthSignService : IEthSignService
                 .ConfigureAwait(false);
             if (string.IsNullOrEmpty(mnemonic))
             {
-                var ensure = await EnsureMnemonicAsync(alias, derivationPath, ct).ConfigureAwait(false);
-                if (ensure.IsFailure)
-                {
-                    return Result.Failure<string>(ensure.Error);
-                }
-                mnemonic = await ResilientStorage
-                    .GetAsync(MnemonicPrefix + alias)
-                    .ConfigureAwait(false);
-                if (string.IsNullOrEmpty(mnemonic))
-                {
-                    return Result.Failure<string>(Error.Failure(
-                        "EnsureMnemonicAsync succeeded but no mnemonic was persisted."));
-                }
+                return Result.Failure<string>(NoRecoveryPhrase(alias));
             }
 
             seed = Bip39.MnemonicToSeed(mnemonic, passphrase: string.Empty);
@@ -378,28 +349,15 @@ public sealed class MauiEthSignService : IEthSignService
         Bip32.ExtendedKey? leaf = null;
         try
         {
-            // Auto-provision on first call so the operator's first
-            // capability_request just works (matches SignPersonalSignAsync's
-            // pattern). Same SecureStorage entry — one operator identity,
-            // two surfaces.
+            // Same SecureStorage entry as personal_sign — one operator
+            // identity, two surfaces. An empty read is refused by name
+            // (NoRecoveryPhrase), never answered with a new phrase.
             var mnemonic = await ResilientStorage
                 .GetAsync(MnemonicPrefix + alias)
                 .ConfigureAwait(false);
             if (string.IsNullOrEmpty(mnemonic))
             {
-                var ensure = await EnsureMnemonicAsync(alias, derivationPath, ct).ConfigureAwait(false);
-                if (ensure.IsFailure)
-                {
-                    return Result.Failure<byte[]>(ensure.Error);
-                }
-                mnemonic = await ResilientStorage
-                    .GetAsync(MnemonicPrefix + alias)
-                    .ConfigureAwait(false);
-                if (string.IsNullOrEmpty(mnemonic))
-                {
-                    return Result.Failure<byte[]>(Error.Failure(
-                        "EnsureMnemonicAsync succeeded but no mnemonic was persisted."));
-                }
+                return Result.Failure<byte[]>(NoRecoveryPhrase(alias));
             }
 
             seed = Bip39.MnemonicToSeed(mnemonic, passphrase: string.Empty);
@@ -454,20 +412,14 @@ public sealed class MauiEthSignService : IEthSignService
             // calling profile_create flow needs the child pubkey for the
             // canonical-JSON binding the master attestation signs over.
             // Same mnemonic-load pattern as SignDigestAsync; refuse to
-            // operate if no mnemonic is provisioned (callers should call
-            // EnsureMnemonicAsync first OR be called from a flow where
-            // EnsureMnemonicAsync has already been invoked transitively
-            // via SignDigestAsync's auto-provision path).
+            // operate if no mnemonic is provisioned (pairing a service
+            // or a restore in Settings provisions it).
             var mnemonic = await ResilientStorage
                 .GetAsync(MnemonicPrefix + alias)
                 .ConfigureAwait(false);
             if (string.IsNullOrEmpty(mnemonic))
             {
-                return Result.Failure<byte[]>(Error.Failure(
-                    $"No mnemonic provisioned at alias '{alias}'. "
-                    + "Call EnsureMnemonicAsync first, OR invoke any "
-                    + "SignDigestAsync / SignPersonalSignAsync path "
-                    + "(those auto-provision on first call)."));
+                return Result.Failure<byte[]>(NoRecoveryPhrase(alias));
             }
 
             seed = Bip39.MnemonicToSeed(mnemonic, passphrase: string.Empty);
