@@ -1176,6 +1176,19 @@ def _resolve_token_for_consumer(consumer: dict) -> str:
     return (material.value or "").strip()
 
 
+def _token_source(entry: dict, default_secret: str) -> str:
+    """Where an agent's or a consumer's token was read from: the env variable's name or the vault entry's
+    service/secret names - never any part of the value. The resolvers' own order: ``token_env`` when it names a
+    non-empty variable, else the dpapi-machine vault entry. The startup banner prints this beside each agent and
+    each devices-pair consumer, so no token's characters reach a log."""
+    token_env = (entry.get("token_env") or "").strip()
+    if token_env and os.environ.get(token_env, "").strip():
+        return f"env {token_env}"
+    vault_service = (entry.get("vault_service") or "").strip()
+    vault_secret = (entry.get("vault_secret") or "").strip() or default_secret
+    return f"vault {vault_service}/{vault_secret}"
+
+
 # ---------------------------------------------------------------------------
 # Per-agent request policies (requestable_actions / requestable_audiences)
 # ---------------------------------------------------------------------------
@@ -1325,6 +1338,8 @@ def main() -> int:
     agents = _resolve_agents()
 
     capability_agent_tokens: dict[str, str] = {}
+    # Where each agent's token was read from (env name or vault entry) - what the banner prints, never the value.
+    capability_agent_token_sources: dict[str, str] = {}
     capability_agent_requestable: dict[str, list[str]] = {}
     capability_agent_audiences: dict[str, list[str]] = {}
     # AUTH-ONLY agents (2026-10-17, hard rule 15.p): "capability_requests": false on an entry - the agent
@@ -1390,6 +1405,7 @@ def main() -> int:
             return 2
 
         capability_agent_tokens[agent_id] = agent_token
+        capability_agent_token_sources[agent_id] = _token_source(agent, "RECTO_CAPABILITY_AGENT_TOKEN")
 
         app_ctx = _build_app_context_from_dict(agent.get("app"))
         if app_ctx is not None:
@@ -1447,6 +1463,8 @@ def main() -> int:
     # broker end-user pairing for any consumer).
     consumers = _resolve_consumers()
     devices_pair_consumer_webhook_tokens: dict[str, str] = {}
+    # Where each consumer's webhook token was read from - what the banner prints, never the value.
+    devices_pair_consumer_token_sources: dict[str, str] = {}
     devices_pair_consumer_relay_urls: dict[str, str] = {}
 
     for consumer in consumers:
@@ -1495,6 +1513,7 @@ def main() -> int:
             return 2
 
         devices_pair_consumer_webhook_tokens[normalized_url] = webhook_token
+        devices_pair_consumer_token_sources[normalized_url] = _token_source(consumer, "OPENCLAW_WEBHOOK_SECRET")
 
         # Optional relay_url: when set, the bootloader forwards to this
         # URL instead of base_url (three-zone architecture commitment #17).
@@ -1728,7 +1747,7 @@ def main() -> int:
     # operator can spot misconfigurations at glance.
     if capability_agent_tokens:
         print("Agents:")
-        for aid, tok in capability_agent_tokens.items():
+        for aid in capability_agent_tokens:
             ctx = principal_apps.get(aid)
             if ctx is not None:
                 ctx_str = f"AppContext={ctx.app_name} ({ctx.app_id})"
@@ -1747,7 +1766,7 @@ def main() -> int:
             members_for = member_code_consumers.get(aid)
             if members_for is not None:
                 ctx_str += f" [mints member codes for: {', '.join(members_for)}]"
-            print(f"  - {aid} (token = {tok[:8]}...) {ctx_str}")
+            print(f"  - {aid} (token from {capability_agent_token_sources[aid]}) {ctx_str}")
     if not owner_code_minters:
         print(
             "WARNING: no agent may mint OWNER pairing codes (no entry carries \"may_mint_owner_codes\": true, nor "
@@ -1762,8 +1781,8 @@ def main() -> int:
     # that the relay endpoint is disabled.
     if devices_pair_consumer_webhook_tokens:
         print("Devices-pair consumers:")
-        for url, tok in devices_pair_consumer_webhook_tokens.items():
-            print(f"  - {url} (token = {tok[:8]}...)")
+        for url in devices_pair_consumer_webhook_tokens:
+            print(f"  - {url} (token from {devices_pair_consumer_token_sources[url]})")
     else:
         print(
             "Devices-pair consumers: (none registered -- "

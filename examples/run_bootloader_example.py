@@ -155,7 +155,7 @@ def main() -> None:
     print(f"Recto bootloader listening on http://{BIND_HOST}:{BIND_PORT}/")
     print(f"State dir: {STATE_DIR}")
     print(f"{pubkey_status}")
-    print(f"Agents:    myservice-agent (token = {agent_token[:8]}...)")
+    print("Agents:    myservice-agent (token from env MYSERVICE_AGENT_TOKEN)")
     print()
     if pairing_code is None:
         if any(p.slot in ("primary", "recovery") for p in state.list_phones()):
