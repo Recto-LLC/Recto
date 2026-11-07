@@ -78,7 +78,8 @@ def _start(state_dir: Path, **kw: Any):
     server = create_server(
         bind_host="127.0.0.1", bind_port=0, state=state, bootloader_id="owner-slots-test",
         challenges=challenges, ssl_context=None, signed_poll_mode=kw.pop("signed_poll_mode", "advisory"),
-        capability_agent_tokens={AGENT_ID: AGENT_TOKEN, BRIDGE_ID: BRIDGE_TOKEN}, **kw,
+        capability_agent_tokens={AGENT_ID: AGENT_TOKEN, BRIDGE_ID: BRIDGE_TOKEN},
+        member_code_consumers=kw.pop("member_code_consumers", {AGENT_ID: [CONSUMER]}), **kw,
     )
     host, port = server.server_address
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1645,7 +1646,7 @@ def test_a_server_built_without_a_challenge_store_stamps_its_codes(tmp_path, mon
     state = StateStore(state_dir=tmp_path)
     server = create_server(bind_host="127.0.0.1", bind_port=0, state=state, bootloader_id="default-store",
                            ssl_context=None, capability_agent_tokens={AGENT_ID: AGENT_TOKEN, BRIDGE_ID: BRIDGE_TOKEN},
-                           owner_code_minters={BRIDGE_ID})
+                           owner_code_minters={BRIDGE_ID}, member_code_consumers={AGENT_ID: [CONSUMER]})
     host, port = server.server_address
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

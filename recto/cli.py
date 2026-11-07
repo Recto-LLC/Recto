@@ -1852,7 +1852,29 @@ def _cmd_vault_seal_passphrase(args, *, out, err):
     from recto.profile.passphrase_member import (
         WeakPassphraseError, normalize_passphrase, passphrase_member_pubkey,
     )
+    from recto.bootloader.genesis_chain import ChainError as _ChainError
     state = StateStore(state_dir=_resolve_state_dir(args))
+
+    # A CHAINED VAULT IS NEVER SEALED OVER, --force or not. Its members are
+    # the genesis chain's replay, and a seal here rewrites the file from the
+    # flat map, dropping the chain. Asked before the phrase is: a phrase this
+    # vault can never take is not asked for. (An unparseable file is the
+    # unreadable case below, with its own --force rule; the store's writer
+    # still refuses any file that carries a chain.)
+    _CHAINED = (
+        "REFUSING: this vault keeps its members in its genesis chain, and a seal "
+        "would write over the chain. A chained vault's members change only by a "
+        "top-plane act (an appended chain entry), never by seal-passphrase. "
+        "Nothing was written."
+    )
+    if state.supports_genesis_chain():
+        try:
+            chained = bool(state.read_genesis_chain())
+        except _ChainError:
+            chained = False
+        if chained:
+            print(_CHAINED, file=err)
+            return 3
 
     existing = state.get_genesis_member(PASSPHRASE_MEMBER_KIND)
     if existing is not None and not getattr(args, "force", False):
@@ -1911,7 +1933,11 @@ def _cmd_vault_seal_passphrase(args, *, out, err):
         print("Not sealed (confirmation not given).", file=err)
         return 2
 
-    state.put_genesis_member(PASSPHRASE_MEMBER_KIND, pubkey)
+    try:
+        state.put_genesis_member(PASSPHRASE_MEMBER_KIND, pubkey)
+    except _ChainError:
+        print(_CHAINED, file=err)
+        return 3
     print("", file=out)
     print("  SEALED.", file=out)
     print("", file=out)

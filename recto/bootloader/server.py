@@ -742,6 +742,9 @@ class BootloaderConfig:
     # "may_mint_owner_codes": true); every other agent mints member codes only. How long an approval, once given,
     # waits for the new phone's second pass. The wrong-code limiter (per public client; never a private-network caller).
     owner_code_minters: frozenset = frozenset()
+    # THE MEMBER PLANE'S CONSUMERS (2026-11-07): agent id -> the consumer base URLs (stripped, no trailing slash) that
+    # agent mints MEMBER pairing codes for (an agent entry's "member_consumers"). An agent with no entry mints none.
+    member_code_consumers: Any = None
     owner_approval_ttl_seconds: int = OWNER_APPROVAL_TTL_SECONDS
     code_limiter: Any = None
 
@@ -6026,6 +6029,18 @@ class BootloaderHandler(BaseHTTPRequestHandler):
                     "detail": "member_of.subject must be an opaque handle of 43 base64url characters",
                 })
                 return
+            # The consumer half of the binding is the agent's own: its entry names the consumers it mints member codes
+            # for (member_consumers), compared as the pair relay compares them (strip, one trailing slash). Any other
+            # consumer - or an agent whose entry names none - is refused before a code exists. The refusal names no
+            # consumer the agent may use.
+            allowed = (cfg.member_code_consumers or {}).get(agent_id, frozenset())
+            if member_of["consumer"].strip().rstrip("/") not in allowed:
+                self._send_json(HTTPStatus.FORBIDDEN, {
+                    "error": "member_consumer_not_allowed",
+                    "detail": f"agent {agent_id!r} mints member codes only for the consumers its entry names "
+                              "(member_consumers)",
+                })
+                return
             code, exp = cfg.challenges.issue_member_pairing_code(
                 ttl_seconds=ttl_seconds, binding=(member_of["consumer"].strip(), subject))
             print(f"[bootloader] minted MEMBER pairing code via /v0.4/pairing/code "
@@ -6034,7 +6049,8 @@ class BootloaderHandler(BaseHTTPRequestHandler):
                                             "plane": "member"})
             return
         # THE OWNER SLOTS: an OWNER code is the operator's - only an agent whose entry carries
-        # "may_mint_owner_codes": true mints one. Every other agent mints member codes (member_of above).
+        # "may_mint_owner_codes": true mints one. Every other agent mints member codes only (member_of above, for the
+        # consumers its entry names).
         if agent_id not in cfg.owner_code_minters:
             self._send_json(HTTPStatus.FORBIDDEN, {
                 "error": "owner_code_mint_not_allowed",
@@ -9197,6 +9213,21 @@ class _LockedHTTPServer(ThreadingHTTPServer):
                 self.store_lock = None
 
 
+def _member_code_consumer_map(raw: Any) -> dict[str, frozenset[str]]:
+    """agent id -> the consumer base URLs it mints MEMBER codes for, each stripped of surrounding space and one
+    trailing slash (the pair relay's comparison). None = no agent mints member codes. A list that is not a non-empty
+    list of non-blank strings raises ValueError naming the agent: a malformed entry is never read as "none" or "any"."""
+    if raw is None:
+        return {}
+    out: dict[str, frozenset[str]] = {}
+    for agent_id, consumers in dict(raw).items():
+        if (not isinstance(consumers, (list, tuple, frozenset, set)) or not consumers
+                or not all(isinstance(c, str) and c.strip().rstrip("/") for c in consumers)):
+            raise ValueError(f"member_code_consumers[{agent_id!r}] must be a non-empty list of consumer base URLs")
+        out[str(agent_id)] = frozenset(c.strip().rstrip("/") for c in consumers)
+    return out
+
+
 def create_server(
     *,
     bind_host: str,
@@ -9248,6 +9279,7 @@ def create_server(
     clusters_lease_ttl_seconds: int = 180,
     signed_poll_mode: str = "advisory",
     owner_code_minters: "set[str] | frozenset[str] | list[str] | None" = None,
+    member_code_consumers: "Mapping[str, list[str] | tuple[str, ...] | frozenset[str]] | None" = None,
 ) -> ThreadingHTTPServer:
     """Construct (but do not start) a bootloader HTTPServer.
 
@@ -9838,6 +9870,13 @@ def create_server(
             f"got {signed_poll_mode!r}"
         )
     BootloaderHandler.config.signed_poll_mode = signed_poll_mode
+    # THE MEMBER PLANE'S CONSUMERS: validated here, like the poll mode, so a malformed list refuses the start instead
+    # of reading as "no consumer" (which refuses every member code) or as a wildcard.
+    try:
+        BootloaderHandler.config.member_code_consumers = _member_code_consumer_map(member_code_consumers)
+    except ValueError:
+        server.server_close()
+        raise
     # THE OWNER SLOTS: who mints owner codes, the wrong-code limiter, and the genesis marker - an absent marker (a
     # store from before it) is decided ONCE: open only on a store with no phone and no session at all.
     BootloaderHandler.config.owner_code_minters = frozenset(owner_code_minters or ())

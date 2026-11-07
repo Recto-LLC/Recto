@@ -194,6 +194,7 @@ def rule15_ctx(tmp_path: Path):
         challenges=challenges, ssl_context=None, signed_poll_mode="required",
         capability_agent_tokens={_AGENT_ID: _AGENT_TOKEN, _UV_AGENT_ID: _UV_AGENT_TOKEN},
         capability_agent_auth_only={_UV_AGENT_ID},
+        member_code_consumers={_AGENT_ID: [_CONSUMER]},
     )
     host, port = server.server_address
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -459,6 +460,7 @@ def uv_ctx(tmp_path: Path):
         user_vault_agent_platforms={_UVA_ID: _PLATFORM},
         user_vault_secret_source_factory=vault.factory,
         user_vault_platform_consumers={_PLATFORM: _CONSUMER},
+        member_code_consumers={_AGENT_ID: [_CONSUMER]},
     )
     host, port = server.server_address
     thread = threading.Thread(target=server.serve_forever, daemon=True)

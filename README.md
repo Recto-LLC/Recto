@@ -251,6 +251,16 @@ you — only the agent that submitted a request can fetch its result.
 `principal_apps` supplies what the phone shows at approval time; without it the
 phone shows an "unknown app" warning.
 
+To pair your MEMBERS' phones, your agent mints a member code
+(`POST /v0.4/pairing/code` with `"member_of": {"consumer": "<your base url>",
+"subject": "<the member's opaque handle>"}`), and the bootloader mints one only
+for a consumer your agent's entry names:
+`member_code_consumers={"your-app-agent": ["https://your-app.example.com"]}`
+here, or `"member_consumers": ["https://your-app.example.com"]` on the agent's
+entry in the launcher's `agents.json`. The comparison ignores surrounding space
+and one trailing slash. Any other consumer, or an agent whose entry names none,
+is refused `member_consumer_not_allowed` and no code is issued.
+
 **On the icon: serve it from your own origin at a stable per-agent URL.** If
 your platform hosts agents acting for businesses with customers of their own,
 resolve the icon per request from the approval's *audience* — an agent's owner

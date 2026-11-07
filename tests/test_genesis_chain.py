@@ -458,3 +458,85 @@ def test_ONE_of_three_still_cannot_change_the_roster():
                        algorithm="ecdsa-p256", signers=[pp_sign]))
     with pytest.raises(ChainError, match="hard rule 14.7"):
         replay(chain)
+
+
+# ---------------------------------------------------------------------------
+# A CHAINED VAULT IS NEVER WRITTEN OVER BY THE FLAT MEMBER WRITER
+# ---------------------------------------------------------------------------
+#
+# On a chained vault the members ARE the chain's replay; the flat writer
+# `put_genesis_member` rewrites genesis_members.json from its `members` map.
+# Writing that map over a chained file would drop the chain itself, so the
+# writer refuses by name and leaves the file as it was - and the CLI's
+# `seal-passphrase` refuses before it asks for a phrase, with or without
+# --force. A member of a chained vault changes by a top-plane act.
+
+def _seal_passphrase(tmp_path, monkeypatch, *, force):
+    import io
+    import types
+
+    import recto.cli as cli
+
+    asked = []
+
+    def prompt(label):
+        asked.append(label)
+        return "correct horse battery staple ridge lantern copper meadow"
+
+    monkeypatch.setattr(cli, "_prompt_passphrase", prompt)
+    monkeypatch.setattr("builtins.input", lambda *a, **k: "SEAL")
+    args = types.SimpleNamespace(state_dir=str(tmp_path), force=force)
+    out, err = io.StringIO(), io.StringIO()
+    rc = cli._cmd_vault_seal_passphrase(args, out=out, err=err)
+    return rc, err.getvalue(), asked
+
+
+def test_a_member_write_on_a_chained_vault_is_refused_and_the_chain_kept(tmp_path, two_member_chain):
+    import pathlib
+
+    chain, *_ = two_member_chain
+    s = _store(tmp_path, {"chain": [e.as_record() for e in chain], "stored_at_unix": 1})
+    path = pathlib.Path(tmp_path) / "genesis_members.json"
+    before = path.read_bytes()
+    pub, algo, _ = _ed()
+    with pytest.raises(ChainError, match="genesis chain"):
+        s.put_genesis_member("passphrase", pub, algo)
+    assert path.read_bytes() == before, "a refused write still rewrote the chained file"
+    assert set(s.list_genesis_members_full()) == {"passphrase", "recovery-phone"}
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_seal_passphrase_on_a_chained_vault_exits_3_by_name(tmp_path, monkeypatch, two_member_chain, force):
+    import pathlib
+
+    chain, *_ = two_member_chain
+    _store(tmp_path, {"chain": [e.as_record() for e in chain], "stored_at_unix": 1})
+    path = pathlib.Path(tmp_path) / "genesis_members.json"
+    before = path.read_bytes()
+    rc, err, asked = _seal_passphrase(tmp_path, monkeypatch, force=force)
+    assert rc == 3, err
+    assert "genesis chain" in err and "top-plane" in err
+    assert asked == [], "the phrase was asked for on a vault it can never be sealed into"
+    assert path.read_bytes() == before
+
+
+def test_a_chain_the_cli_cannot_read_is_still_never_written_over(tmp_path, monkeypatch):
+    """The store is the backstop: a `chain` that is not a list reads as unreadable to the CLI's
+    up-front look, and the writer itself still refuses the overwrite."""
+    import pathlib
+
+    _store(tmp_path, {"chain": {"not": "a list"}, "stored_at_unix": 1})
+    path = pathlib.Path(tmp_path) / "genesis_members.json"
+    before = path.read_bytes()
+    rc, err, _ = _seal_passphrase(tmp_path, monkeypatch, force=True)
+    assert rc == 3, err
+    assert "genesis chain" in err
+    assert path.read_bytes() == before
+
+
+def test_a_PRE_CHAIN_vault_still_takes_a_member_write(tmp_path):
+    """THE POSITIVE CONTROL: the flat writer keeps working where there is no chain."""
+    pub, algo, _ = _ed()
+    s = _store(tmp_path, {"members": {}, "stored_at_unix": 1})
+    s.put_genesis_member("passphrase", pub, algo)
+    assert s.get_genesis_member("passphrase") == pub

@@ -55,6 +55,7 @@ def ctx(tmp_path):
         bind_host="127.0.0.1", bind_port=0, state=state, bootloader_id="member-plane-test",
         challenges=challenges, ssl_context=None, signed_poll_mode="required",
         capability_agent_tokens={AGENT_ID: AGENT_TOKEN},
+        member_code_consumers={AGENT_ID: [CONSUMER]},
     )
     host, port = server.server_address
     threading.Thread(target=server.serve_forever, daemon=True).start()

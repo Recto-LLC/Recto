@@ -63,6 +63,12 @@ capability endpoints return 404):
                            "0" or unset: member codes only. Any other
                            value exits 2. The agents.json twin is
                            "may_mint_owner_codes": true.
+    RECTO_AGENT_MEMBER_CONSUMERS
+                           Comma-separated consumer base URLs this agent
+                           mints MEMBER pairing codes for (member_of's
+                           consumer must be one of them). Unset: no
+                           member codes. A blank item exits 2. The
+                           agents.json twin is "member_consumers".
 
 AppContext (optional -- without it, the phone shows "Unknown app"
 warning instead of the consumer's branded approval card):
@@ -90,8 +96,10 @@ Pairing-code mint (existing convention):
                             restart doesn't issue a throwaway code.
                             On demand, POST /v0.4/pairing/code mints an
                             OWNER code only for a flagged agent
-                            (may_mint_owner_codes); any agent mints a
-                            MEMBER code by sending member_of. Past
+                            (may_mint_owner_codes); an agent mints a
+                            MEMBER code by sending member_of for a
+                            consumer its entry names
+                            (member_consumers). Past
                             genesis an owner phone spends a code on each
                             of its two passes. Unquiet, the startup code
                             is printed only while owner genesis is open.
@@ -982,6 +990,15 @@ def _env_owner_mint_flag() -> bool:
     sys.exit(2)
 
 
+def _env_member_consumers() -> list[str] | None:
+    """RECTO_AGENT_MEMBER_CONSUMERS: comma-separated consumer base URLs, or None when unset. Items are returned as
+    written (a blank one included) so the entry's own reader refuses a stray comma rather than dropping it."""
+    raw = os.environ.get("RECTO_AGENT_MEMBER_CONSUMERS", "").strip()
+    if not raw:
+        return None
+    return [item.strip() for item in raw.split(",")]
+
+
 def _owner_code_minters(agents: list[dict]) -> set[str]:
     """THE OWNER SLOTS: the agents whose entry carries "may_mint_owner_codes": true - a strict JSON boolean; any
     other value is a config error naming the agent."""
@@ -1032,6 +1049,9 @@ def _resolve_agents() -> list[dict]:
             # THE OWNER SLOTS: the single-agent twin of an agents.json entry's
             # "may_mint_owner_codes" - "1" lets this agent mint OWNER pairing codes.
             "may_mint_owner_codes": _env_owner_mint_flag(),
+            # THE MEMBER PLANE'S CONSUMERS: the single-agent twin of an entry's "member_consumers" - comma-separated
+            # consumer base URLs this agent mints MEMBER codes for. Unset = none; a blank item refuses startup.
+            "member_consumers": _env_member_consumers(),
             "app": {
                 "app_id": os.environ.get("RECTO_APP_ID", "").strip(),
                 "app_name": os.environ.get("RECTO_APP_NAME", "").strip(),
@@ -1310,6 +1330,10 @@ def main() -> int:
     # AUTH-ONLY agents (2026-10-17, hard rule 15.p): "capability_requests": false on an entry - the agent
     # authenticates to a substrate (e.g. the user vault) and the bootloader refuses any capability card it asks for.
     capability_agent_auth_only: set[str] = set()
+    # THE MEMBER PLANE'S CONSUMERS (2026-11-07): "member_consumers" on an entry names the consumer base URLs that agent
+    # mints MEMBER pairing codes for; an agent with no list mints none (the bootloader refuses
+    # member_consumer_not_allowed). Present = a non-empty array of non-blank strings, like the request policies.
+    member_code_consumers: dict[str, list[str]] = {}
     principal_apps: dict[str, AppContext] = {}
     # THE OWNER SLOTS (hard rule 14.4, amended): only an agent whose entry carries "may_mint_owner_codes": true mints
     # OWNER pairing codes; every other agent mints member codes only. A strict JSON boolean - anything else refuses.
@@ -1387,6 +1411,9 @@ def main() -> int:
             audiences = _parse_agent_policy_list(
                 agent_id, agent, "requestable_audiences", "audience",
             )
+            member_consumers = _parse_agent_policy_list(
+                agent_id, agent, "member_consumers", "consumer base-URL",
+            )
         except ValueError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
@@ -1407,6 +1434,8 @@ def main() -> int:
             capability_agent_requestable[agent_id] = requestable
         if audiences is not None:
             capability_agent_audiences[agent_id] = audiences
+        if member_consumers is not None:
+            member_code_consumers[agent_id] = [c.rstrip("/") for c in member_consumers]
 
     # Phase H end-user device pairing relay (2026-05-19). When the
     # operator registers one or more consumers via
@@ -1628,6 +1657,7 @@ def main() -> int:
             capability_agent_audiences=capability_agent_audiences or None,
             capability_agent_auth_only=capability_agent_auth_only or None,
             owner_code_minters=owner_code_minters,
+            member_code_consumers=member_code_consumers or None,
             capability_operator_token=operator_write_token,
             principal_apps=principal_apps,
             devices_pair_consumer_webhook_tokens=devices_pair_consumer_webhook_tokens,
@@ -1714,6 +1744,9 @@ def main() -> int:
                 ctx_str += f" [audiences: {', '.join(aud_policy)}]"
             if aid in owner_code_minters:
                 ctx_str += " [mints owner codes]"
+            members_for = member_code_consumers.get(aid)
+            if members_for is not None:
+                ctx_str += f" [mints member codes for: {', '.join(members_for)}]"
             print(f"  - {aid} (token = {tok[:8]}...) {ctx_str}")
     if not owner_code_minters:
         print(

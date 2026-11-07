@@ -13,7 +13,9 @@
 
   "_requestable_audiences": "OPTIONAL per-agent field: an array of audience strings this agent may name in a request's aud claim -- WHERE the grant it asks for may be spent, as requestable_actions bounds WHAT it may do. When present the agent is deny-by-default -- a request whose aud is not an array of strings, is empty, or names any audience outside this list is refused 403 BEFORE it reaches the operator's approval queue. When absent the agent is unrestricted at this layer. The values are YOURS: name each verifier the way it expects to be named (one audience per consumer, per cluster, per executor). Recto ships none, treats aud as opaque, compares it exactly (case included) and never rewrites it; the phone shows it on the approval card. Like requestable_actions this narrows what may be ASKED and grants nothing. An empty array is a config error and refuses startup.",
 
-  "_may_mint_owner_codes": "OPTIONAL per-agent field, a JSON boolean (default false): true lets this agent mint OWNER pairing codes through POST /v0.4/pairing/code (no member_of). Give it to the operator's own agent only - a consumer mints MEMBER codes (member_of), which register beside the owner slots. Any other value refuses startup. Past genesis, adding or replacing an owner phone spends a code on each of its two passes, so it needs a flagged agent; the startup code (RECTO_BOOTLOADER_QUIET unset) is printed only while owner genesis is open - the first owner, or after a host reset. An owner code is still not enough on its own: once the bootloader has an owner, a new owner key needs the approval of an owner phone it does not displace.",
+  "_may_mint_owner_codes": "OPTIONAL per-agent field, a JSON boolean (default false): true lets this agent mint OWNER pairing codes through POST /v0.4/pairing/code (no member_of). Give it to the operator's own agent only - a consumer mints MEMBER codes (member_of, for the consumers its member_consumers names), which register beside the owner slots. Any other value refuses startup. Past genesis, adding or replacing an owner phone spends a code on each of its two passes, so it needs a flagged agent; the startup code (RECTO_BOOTLOADER_QUIET unset) is printed only while owner genesis is open - the first owner, or after a host reset. An owner code is still not enough on its own: once the bootloader has an owner, a new owner key needs the approval of an owner phone it does not displace.",
+
+  "_member_consumers": "OPTIONAL per-agent field: an array of consumer base URLs this agent mints MEMBER pairing codes for (POST /v0.4/pairing/code with member_of {consumer, subject}). A member code is minted only when member_of.consumer is one of them - compared after stripping surrounding space and one trailing slash; anything else is refused 403 member_consumer_not_allowed and no code is issued. An agent with no list mints no member codes (the operator's own agent needs none). An empty array or a blank entry refuses startup. Single-agent twin: RECTO_AGENT_MEMBER_CONSUMERS, comma-separated.",
 
   "agents": [
     {
@@ -28,6 +30,7 @@
       "token_env": "RECTO_AGENT_TOKEN_EXAMPLE_SERVICE",
       "vault_service": "ExampleService",
       "vault_secret": "RECTO_CAPABILITY_AGENT_TOKEN",
+      "member_consumers": ["https://example.com"],
       "app": {
         "app_id": "example-service",
         "app_name": "Example Service",

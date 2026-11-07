@@ -2559,7 +2559,15 @@ class StateStore(StateStoreBase):
 
         Writes the TAGGED form. Reads tolerate the untagged form -- see
         `list_genesis_members_full`.
+
+        A CHAINED VAULT IS NEVER WRITTEN HERE. Its members are the chain's
+        replay, and this writer rewrites the file from the flat `members` map,
+        so a write would drop the chain. Raises ChainError, writing nothing,
+        when the stored file carries a chain: a member of a chained vault
+        changes by a top-plane act (an appended chain entry).
         """
+        from recto.bootloader.genesis_chain import ChainError
+
         kind = (kind or "").strip().lower()
         if not kind or not kind.replace("-", "").isalnum():
             raise ValueError(f"genesis member kind must be alphanumeric; got {kind!r}")
@@ -2572,6 +2580,11 @@ class StateStore(StateStoreBase):
                     body = json.loads(path.read_text(encoding="utf-8"))
                 except Exception:
                     body = {}
+            if body.get("chain"):
+                raise ChainError(
+                    "this vault keeps its members in its genesis chain; a member is "
+                    "changed by a top-plane act, never written over the chain"
+                )
             members = dict(body.get("members") or {})
             members[kind] = {"pubkey": pubkey.hex(), "algorithm": algo}
             self._atomic_write(path, {
