@@ -1856,11 +1856,12 @@ def main() -> int:
         elif owner_code_minters:
             print(
                 f"Mint codes on demand via POST /v0.4/pairing/code: OWNER codes by {', '.join(sorted(owner_code_minters))}; "
-                "any agent mints MEMBER codes by sending member_of."
+                "an agent mints MEMBER codes by sending member_of, only for a consumer its member_consumers names."
             )
         else:
             print(
-                "POST /v0.4/pairing/code mints MEMBER codes only (send member_of): no agent is flagged for OWNER codes "
+                "POST /v0.4/pairing/code mints MEMBER codes only (send member_of, for a consumer the agent's "
+                "member_consumers names): no agent is flagged for OWNER codes "
                 "(\"may_mint_owner_codes\": true, or RECTO_AGENT_MAY_MINT_OWNER_CODES=1 in single-agent mode). "
                 "A startup code (RECTO_BOOTLOADER_QUIET unset) is printed only while owner genesis is open (the first "
                 "owner, or after a host reset)."
