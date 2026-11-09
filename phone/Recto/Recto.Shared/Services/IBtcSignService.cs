@@ -46,12 +46,18 @@ public interface IBtcSignService
     /// account. <paramref name="network"/> determines the bech32 HRP
     /// (<c>bc</c> for mainnet, <c>tb</c> for testnet/signet,
     /// <c>bcrt</c> for regtest) and the resulting address string.
+    /// A phrase is created only when none was ever provisioned for the
+    /// alias: one that was provisioned and now reads empty fails with
+    /// <see cref="RecoveryPhraseProvisioning.UnreadableCode"/> and nothing is
+    /// written, unless <paramref name="replaceUnreadablePhrase"/> says the
+    /// person chose a new phrase after that refusal.
     /// </summary>
     Task<Result<BtcAccount>> EnsureMnemonicAsync(
         string alias,
         string derivationPath,
         string network,
         string coin,
+        bool replaceUnreadablePhrase,
         CancellationToken ct);
 
     /// <summary>

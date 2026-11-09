@@ -366,6 +366,21 @@
                         <div class="alert alert-danger small mt-3 mb-0 text-start" role="alert">
                             @_pairServiceError
                         </div>
+                        @if (_pairServicePhraseUnreadable)
+                        {
+                            <button type="button"
+                                    class="btn btn-primary w-100 mt-3"
+                                    disabled="@_pairServiceBusy"
+                                    @onclick="RestorePhraseInSettings">
+                                Restore my recovery phrase
+                            </button>
+                            <button type="button"
+                                    class="btn btn-outline-danger w-100 mt-2"
+                                    disabled="@_pairServiceBusy"
+                                    @onclick="ChooseNewPhraseAndPair">
+                                Create a new phrase and pair
+                            </button>
+                        }
                     }
                 }
                 else
@@ -2356,6 +2371,29 @@
     private string _pairServiceBusyText = string.Empty;
     private string? _pairServiceError;
     private string? _pairServiceSuccessMessage;
+    // The pairing refused because a phrase this phone once held reads empty: the
+    // error offers a restore in Settings or a new phrase.
+    private bool _pairServicePhraseUnreadable;
+    // Set only by ChooseNewPhraseAndPair, read once by the next pairing attempt.
+    private bool _pairServiceReplacePhrase;
+
+    /// <summary>The person chose a new recovery phrase after the unreadable-phrase
+    /// refusal: the old wallet stays out of reach without its words.</summary>
+    private async Task ChooseNewPhraseAndPair()
+    {
+        _pairServiceReplacePhrase = true;
+        try
+        {
+            await HandlePairServiceClick();
+        }
+        finally
+        {
+            // The choice covers this one attempt only, even one that returned early.
+            _pairServiceReplacePhrase = false;
+        }
+    }
+
+    private void RestorePhraseInSettings() => Nav.NavigateTo("/settings");
 
     // Build 6 (2026-06-02): warm-start consumer gap fix.
     //
@@ -2919,6 +2957,15 @@
         try { Pinning.BeginPairing(new Uri(_bootloaderUrl).Host); } catch { /* a bad URL fails at the first request */ }
         try
         {
+            // A build with no hardware key store (a release Windows or Mac
+            // Catalyst build) refuses by name before it contacts the
+            // bootloader, so no pairing code is spent on it.
+            if (EnclaveKeys is NoHardwareKeyService)
+            {
+                _errorMessage = NoHardwareKeyService.Refusal.Message;
+                return;
+            }
+
             // App Review demo-mode branch (banked 2026-05-22). When the
             // operator typed the demo code, short-circuit the HTTP pairing
             // handshake entirely and run the demo flow. The biometric +
@@ -3505,6 +3552,7 @@
             return;
         }
         _pairServiceError = null;
+        _pairServicePhraseUnreadable = false;
         _pairServiceBusy = true;
         _pairServiceBusyText = "Deriving master pubkey...";
         StateHasChanged();
@@ -3517,27 +3565,28 @@
             //    capability_request flow — one BIP-39 mnemonic, one
             //    secp256k1 key, multiple capability-bound surfaces.
             //
-            // Auto-provision the mnemonic if absent. Fresh-APK-install
-            // case (sideload changed signing-cert chain → Android wiped
-            // SecureStorage → no mnemonic at alias 'default'): the
-            // EnsureMnemonicAsync call generates a fresh 24-word BIP-39
-            // mnemonic on first invocation, persists it to SecureStorage,
-            // and returns the derived EthAccount. The mnemonic stays
-            // intact across subsequent pairings; this call is idempotent
-            // on existing mnemonics. Caught 2026-05-31 during the
-            // Pixel-Android-16 fresh-install re-pair (Task #40 multi-
-            // user pairing test) — the previous error path 'No
-            // mnemonic provisioned at alias default' surfaced because
-            // DerivePubkeyAtPathAsync is intentionally read-only and
-            // does NOT auto-provision (it's the canonical "fail loud
-            // if mnemonic missing" path for downstream call sites that
-            // shouldn't surprise-mint identity material).
+            // Provision the phrase here, the one page path that may create
+            // one. On a phone where no phrase was ever provisioned (a fresh
+            // install), EnsureMnemonicAsync generates a 24-word BIP-39
+            // phrase, persists it and marks the alias provisioned; an
+            // existing phrase is read unchanged. DerivePubkeyAtPathAsync
+            // below stays read-only and never creates one.
+            //
+            // A phrase this phone once held and now reads empty is refused
+            // by name, never silently replaced: the person picks a restore in
+            // Settings or a new phrase (ChooseNewPhraseAndPair, the only
+            // place that sets _pairServiceReplacePhrase).
             const string masterPath = "m/44'/60'/0'/0/0";
+            var replacePhrase = _pairServiceReplacePhrase;
+            _pairServiceReplacePhrase = false;
             var ensureResult = await EthSigner.EnsureMnemonicAsync(
-                EthKeyAlias, masterPath, CancellationToken.None);
+                EthKeyAlias, masterPath, replaceUnreadablePhrase: replacePhrase, CancellationToken.None);
             if (ensureResult.IsFailure)
             {
-                _pairServiceError = $"Could not provision master mnemonic: {ensureResult.Error.Message}";
+                _pairServicePhraseUnreadable = RecoveryPhraseProvisioning.IsUnreadable(ensureResult.Error);
+                _pairServiceError = _pairServicePhraseUnreadable
+                    ? ensureResult.Error.Message
+                    : $"Could not provision master mnemonic: {ensureResult.Error.Message}";
                 return;
             }
             var pubkeyResult = await EthSigner.DerivePubkeyAtPathAsync(

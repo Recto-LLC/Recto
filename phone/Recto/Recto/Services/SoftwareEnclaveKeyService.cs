@@ -1,10 +1,12 @@
-// DEV-HOST ONLY. Compile-time excluded from every device target: the
-// #if guard below means this class DOES NOT EXIST in iOS or Android
-// binaries (2026-08-05 hardening — previously it shipped in the iOS IPA
-// behind a runtime DeviceType.Virtual check; runtime gates on software
-// key material are not an acceptable substitute for the code being
-// absent). Store builds contain only the hardware-enclave services.
-#if !IOS && !ANDROID
+// DEV-HOST, DEBUG ONLY. Compile-time excluded from every device target and
+// from every release build: the #if guard below means this class DOES NOT
+// EXIST in iOS or Android binaries (2026-08-05 hardening — previously it
+// shipped in the iOS IPA behind a runtime DeviceType.Virtual check; runtime
+// gates on software key material are not an acceptable substitute for the
+// code being absent), nor in a release Windows or Mac Catalyst build
+// (2026-11-09), which registers NoHardwareKeyService and refuses to pair.
+// Store builds contain only the hardware-enclave services.
+#if DEBUG && !IOS && !ANDROID
 using System;
 using System.Threading;
 using System.Threading.Tasks;

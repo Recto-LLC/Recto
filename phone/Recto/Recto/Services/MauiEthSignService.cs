@@ -61,7 +61,7 @@ namespace Recto.Services;
 /// </summary>
 public sealed class MauiEthSignService : IEthSignService
 {
-    private const string MnemonicPrefix = "recto.phone.eth.mnemonic.";
+    private const string MnemonicPrefix = MauiRecoveryPhraseStore.PhrasePrefix;
 
     /// <summary>A sign reads the recovery phrase and never creates one (2026-11-07): an
     /// empty read is refused by name, so a phrase the platform store could not read is
@@ -74,6 +74,7 @@ public sealed class MauiEthSignService : IEthSignService
     public async Task<Result<EthAccount>> EnsureMnemonicAsync(
         string alias,
         string derivationPath,
+        bool replaceUnreadablePhrase,
         CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(alias))
@@ -87,19 +88,18 @@ public sealed class MauiEthSignService : IEthSignService
 
         try
         {
-            // Idempotent: read the existing mnemonic if present, otherwise
-            // generate a fresh 24-word BIP-39 mnemonic and persist.
-            var mnemonic = await ResilientStorage
-                .GetAsync(MnemonicPrefix + alias)
+            // Reads the existing phrase; creates one only when none was ever
+            // provisioned, or when the person chose a new phrase after the
+            // refusal. An empty read after a phrase was provisioned is refused
+            // by name, never answered with a new phrase (RecoveryPhraseProvisioning).
+            var phrase = await RecoveryPhraseProvisioning
+                .EnsureAsync(MauiRecoveryPhraseStore.Instance, alias, replaceUnreadablePhrase)
                 .ConfigureAwait(false);
-            if (string.IsNullOrEmpty(mnemonic))
+            if (phrase.IsFailure)
             {
-                mnemonic = Bip39.GenerateMnemonic(wordCount: 24);
-                await ResilientStorage
-                    .SetAsync(MnemonicPrefix + alias, mnemonic)
-                    .ConfigureAwait(false);
+                return Result.Failure<EthAccount>(phrase.Error);
             }
-            return DeriveAccount(mnemonic, derivationPath);
+            return DeriveAccount(phrase.Value, derivationPath);
         }
         catch (Exception ex)
         {
@@ -115,9 +115,7 @@ public sealed class MauiEthSignService : IEthSignService
     {
         try
         {
-            var mnemonic = await ResilientStorage
-                .GetAsync(MnemonicPrefix + alias)
-                .ConfigureAwait(false);
+            var mnemonic = await MauiRecoveryPhraseStore.Instance.ReadAsync(alias).ConfigureAwait(false);
             if (string.IsNullOrEmpty(mnemonic))
             {
                 return Result.Failure<EthAccount>(Error.NotFound(
@@ -136,9 +134,7 @@ public sealed class MauiEthSignService : IEthSignService
     {
         try
         {
-            var mnemonic = await ResilientStorage
-                .GetAsync(MnemonicPrefix + alias)
-                .ConfigureAwait(false);
+            var mnemonic = await MauiRecoveryPhraseStore.Instance.ReadAsync(alias).ConfigureAwait(false);
             return Result.Success(!string.IsNullOrEmpty(mnemonic));
         }
         catch (Exception ex)
@@ -169,9 +165,7 @@ public sealed class MauiEthSignService : IEthSignService
         {
             // A sign reads the phrase; an empty read is refused by name
             // (NoRecoveryPhrase), never answered with a new phrase.
-            var mnemonic = await ResilientStorage
-                .GetAsync(MnemonicPrefix + alias)
-                .ConfigureAwait(false);
+            var mnemonic = await MauiRecoveryPhraseStore.Instance.ReadAsync(alias).ConfigureAwait(false);
             if (string.IsNullOrEmpty(mnemonic))
             {
                 return Result.Failure<string>(NoRecoveryPhrase(alias));
@@ -238,9 +232,7 @@ public sealed class MauiEthSignService : IEthSignService
         Bip32.ExtendedKey? leaf = null;
         try
         {
-            var mnemonic = await ResilientStorage
-                .GetAsync(MnemonicPrefix + alias)
-                .ConfigureAwait(false);
+            var mnemonic = await MauiRecoveryPhraseStore.Instance.ReadAsync(alias).ConfigureAwait(false);
             if (string.IsNullOrEmpty(mnemonic))
             {
                 return Result.Failure<string>(NoRecoveryPhrase(alias));
@@ -292,9 +284,7 @@ public sealed class MauiEthSignService : IEthSignService
         Bip32.ExtendedKey? leaf = null;
         try
         {
-            var mnemonic = await ResilientStorage
-                .GetAsync(MnemonicPrefix + alias)
-                .ConfigureAwait(false);
+            var mnemonic = await MauiRecoveryPhraseStore.Instance.ReadAsync(alias).ConfigureAwait(false);
             if (string.IsNullOrEmpty(mnemonic))
             {
                 return Result.Failure<string>(NoRecoveryPhrase(alias));
@@ -352,9 +342,7 @@ public sealed class MauiEthSignService : IEthSignService
             // Same SecureStorage entry as personal_sign — one operator
             // identity, two surfaces. An empty read is refused by name
             // (NoRecoveryPhrase), never answered with a new phrase.
-            var mnemonic = await ResilientStorage
-                .GetAsync(MnemonicPrefix + alias)
-                .ConfigureAwait(false);
+            var mnemonic = await MauiRecoveryPhraseStore.Instance.ReadAsync(alias).ConfigureAwait(false);
             if (string.IsNullOrEmpty(mnemonic))
             {
                 return Result.Failure<byte[]>(NoRecoveryPhrase(alias));
@@ -414,9 +402,7 @@ public sealed class MauiEthSignService : IEthSignService
             // Same mnemonic-load pattern as SignDigestAsync; refuse to
             // operate if no mnemonic is provisioned (pairing a service
             // or a restore in Settings provisions it).
-            var mnemonic = await ResilientStorage
-                .GetAsync(MnemonicPrefix + alias)
-                .ConfigureAwait(false);
+            var mnemonic = await MauiRecoveryPhraseStore.Instance.ReadAsync(alias).ConfigureAwait(false);
             if (string.IsNullOrEmpty(mnemonic))
             {
                 return Result.Failure<byte[]>(NoRecoveryPhrase(alias));
@@ -474,9 +460,7 @@ public sealed class MauiEthSignService : IEthSignService
             // gate is the CALLER's (Settings backup ceremony fires
             // EnclaveKeys.SignAsync immediately before this; see the interface
             // doc's SECURITY note). We do NOT re-prompt here.
-            var mnemonic = await ResilientStorage
-                .GetAsync(MnemonicPrefix + alias)
-                .ConfigureAwait(false);
+            var mnemonic = await MauiRecoveryPhraseStore.Instance.ReadAsync(alias).ConfigureAwait(false);
             if (string.IsNullOrEmpty(mnemonic))
             {
                 return Result.Failure<string>(Error.NotFound(
@@ -531,8 +515,10 @@ public sealed class MauiEthSignService : IEthSignService
 
         try
         {
-            await ResilientStorage
-                .SetAsync(MnemonicPrefix + alias, normalized)
+            // The store marks the alias provisioned, so a later empty read is
+            // refused rather than answered with a new phrase.
+            await MauiRecoveryPhraseStore.Instance
+                .WriteAsync(alias, normalized)
                 .ConfigureAwait(false);
             // Drop any cached first-cut single-key entry so the next sign
             // re-derives from the freshly-imported seed (sister of ClearAsync).

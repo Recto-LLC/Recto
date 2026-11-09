@@ -52,11 +52,16 @@ public interface ITronSignService
     /// mnemonic exists yet, generates a fresh 24-word BIP-39 mnemonic
     /// (or reads the SHARED mnemonic that ETH/BTC/ED already
     /// provisioned), persists it, and returns the freshly-derived
-    /// account.
+    /// account. A phrase is created only when none was ever provisioned
+    /// for the alias: one that was provisioned and now reads empty fails
+    /// with <see cref="RecoveryPhraseProvisioning.UnreadableCode"/> and
+    /// nothing is written, unless <paramref name="replaceUnreadablePhrase"/>
+    /// says the person chose a new phrase after that refusal.
     /// </summary>
     Task<Result<TronAccount>> EnsureMnemonicAsync(
         string alias,
         string derivationPath,
+        bool replaceUnreadablePhrase,
         CancellationToken ct);
 
     /// <summary>

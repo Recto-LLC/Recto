@@ -72,11 +72,19 @@ public static class MauiProgram
         builder.Services.AddSingleton<IEnclaveKeyService, Recto.Platforms.AndroidImpl.AndroidStrongBoxKeyService>();
         // Android FCM push-token registration.
         builder.Services.AddSingleton<IPushTokenService, Recto.Platforms.AndroidImpl.AndroidFcmPushTokenService>();
-#else
-        // Windows / Mac Catalyst dev-loop backing (BouncyCastle Ed25519, no enclave).
+#elif DEBUG
+        // Windows / Mac Catalyst DEBUG dev loop only (BouncyCastle Ed25519, no
+        // enclave). The software key service is compiled for DEBUG builds of
+        // these targets alone.
         builder.Services.AddSingleton<IEnclaveKeyService, SoftwareEnclaveKeyService>();
         // No push transport on dev hosts; pairing still works, bootloader
         // falls back to the 3s poll cycle.
+        builder.Services.AddSingleton<IPushTokenService, NoOpPushTokenService>();
+#else
+        // A release Windows or Mac Catalyst build has no hardware key store:
+        // it registers no software key service, and its key service refuses
+        // every key act by name, so it cannot pair as an authority device.
+        builder.Services.AddSingleton<IEnclaveKeyService, NoHardwareKeyService>();
         builder.Services.AddSingleton<IPushTokenService, NoOpPushTokenService>();
 #endif
         builder.Services.AddSingleton<IPairingStateService, MauiPairingStateService>();

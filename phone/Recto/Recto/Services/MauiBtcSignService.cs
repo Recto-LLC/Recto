@@ -43,7 +43,7 @@ public sealed class MauiBtcSignService : IBtcSignService
     // SAME storage prefix as MauiEthSignService — both services share
     // the mnemonic. Storage key for alias "default" is
     // "recto.phone.eth.mnemonic.default".
-    private const string MnemonicPrefix = "recto.phone.eth.mnemonic.";
+    private const string MnemonicPrefix = MauiRecoveryPhraseStore.PhrasePrefix;
 
     /// <summary>A sign reads the recovery phrase and never creates one (2026-11-07): an
     /// empty read is refused by name, so a phrase the platform store could not read is
@@ -58,6 +58,7 @@ public sealed class MauiBtcSignService : IBtcSignService
         string derivationPath,
         string network,
         string coin,
+        bool replaceUnreadablePhrase,
         CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(alias))
@@ -75,17 +76,16 @@ public sealed class MauiBtcSignService : IBtcSignService
 
         try
         {
-            var mnemonic = await ResilientStorage
-                .GetAsync(MnemonicPrefix + alias)
+            // An empty read after a phrase was provisioned is refused by name, never
+            // answered with a new phrase (RecoveryPhraseProvisioning).
+            var phrase = await RecoveryPhraseProvisioning
+                .EnsureAsync(MauiRecoveryPhraseStore.Instance, alias, replaceUnreadablePhrase)
                 .ConfigureAwait(false);
-            if (string.IsNullOrEmpty(mnemonic))
+            if (phrase.IsFailure)
             {
-                mnemonic = Bip39.GenerateMnemonic(wordCount: 24);
-                await ResilientStorage
-                    .SetAsync(MnemonicPrefix + alias, mnemonic)
-                    .ConfigureAwait(false);
+                return Result.Failure<BtcAccount>(phrase.Error);
             }
-            return DeriveAccount(mnemonic, derivationPath, network, coin);
+            return DeriveAccount(phrase.Value, derivationPath, network, coin);
         }
         catch (Exception ex)
         {
@@ -103,9 +103,7 @@ public sealed class MauiBtcSignService : IBtcSignService
     {
         try
         {
-            var mnemonic = await ResilientStorage
-                .GetAsync(MnemonicPrefix + alias)
-                .ConfigureAwait(false);
+            var mnemonic = await MauiRecoveryPhraseStore.Instance.ReadAsync(alias).ConfigureAwait(false);
             if (string.IsNullOrEmpty(mnemonic))
             {
                 return Result.Failure<BtcAccount>(Error.NotFound(
@@ -124,9 +122,7 @@ public sealed class MauiBtcSignService : IBtcSignService
     {
         try
         {
-            var mnemonic = await ResilientStorage
-                .GetAsync(MnemonicPrefix + alias)
-                .ConfigureAwait(false);
+            var mnemonic = await MauiRecoveryPhraseStore.Instance.ReadAsync(alias).ConfigureAwait(false);
             return Result.Success(!string.IsNullOrEmpty(mnemonic));
         }
         catch (Exception ex)
@@ -157,9 +153,7 @@ public sealed class MauiBtcSignService : IBtcSignService
         Bip32.ExtendedKey? leaf = null;
         try
         {
-            var mnemonic = await ResilientStorage
-                .GetAsync(MnemonicPrefix + alias)
-                .ConfigureAwait(false);
+            var mnemonic = await MauiRecoveryPhraseStore.Instance.ReadAsync(alias).ConfigureAwait(false);
             if (string.IsNullOrEmpty(mnemonic))
             {
                 return Result.Failure<string>(NoRecoveryPhrase(alias));

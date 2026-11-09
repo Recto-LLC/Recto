@@ -9,8 +9,10 @@ namespace Recto.Shared.Services;
 //
 // On dev hosts (Windows + Mac Catalyst), there's no hardware Secure Enclave
 // or StrongBox. MauiProgram.cs registers SoftwareEnclaveKeyService on those
-// platforms, which doesn't require biometric. This null impl reports
-// Available so the Pair button stays enabled for dev workflows.
+// platforms in DEBUG builds only, which doesn't require biometric; a release
+// build registers NoHardwareKeyService, and pairing refuses by name. This
+// null impl reports Available so the Pair button stays enabled for dev
+// workflows.
 //
 // Banked Build 5 (2026-06-02) alongside the new IBiometricsAvailability
 // interface.

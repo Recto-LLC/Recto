@@ -28,7 +28,8 @@ namespace Recto.Shared.Services;
 /// <para>
 /// Mnemonic creation is one-shot per <paramref name="alias"/> at the
 /// service layer &mdash; <see cref="EnsureMnemonicAsync"/> generates a
-/// fresh 24-word BIP39 mnemonic if none exists, otherwise returns the
+/// fresh 24-word BIP39 mnemonic if none was ever provisioned (an empty read
+/// after one was is refused by name), otherwise returns the
 /// existing account derived at the default path. Operators wanting to
 /// import an existing mnemonic from another wallet use
 /// <see cref="ImportMnemonicAsync"/> at v0.6+ (not in v0.5+ groundwork).
@@ -48,13 +49,18 @@ public interface IEthSignService
 {
     /// <summary>
     /// Returns the account derived at <paramref name="derivationPath"/> from
-    /// the mnemonic stored under <paramref name="alias"/>. If no mnemonic
-    /// exists yet, generates a fresh 24-word BIP39 mnemonic, persists it
-    /// in <c>SecureStorage</c>, and returns the freshly-derived account.
+    /// the mnemonic stored under <paramref name="alias"/>. If no mnemonic was
+    /// ever provisioned for the alias, generates a fresh 24-word BIP39
+    /// mnemonic, persists it in <c>SecureStorage</c>, and returns the
+    /// freshly-derived account. If one was provisioned and now reads empty,
+    /// fails with <see cref="RecoveryPhraseProvisioning.UnreadableCode"/> and
+    /// writes nothing, unless <paramref name="replaceUnreadablePhrase"/> says
+    /// the person chose a new phrase after that refusal.
     /// </summary>
     Task<Result<EthAccount>> EnsureMnemonicAsync(
         string alias,
         string derivationPath,
+        bool replaceUnreadablePhrase,
         CancellationToken ct);
 
     /// <summary>
