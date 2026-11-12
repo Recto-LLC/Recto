@@ -136,12 +136,15 @@ public sealed class AndroidStrongBoxKeyService : IEnclaveKeyService
 
     public Task<Result<byte[]>> SignAsync(string keyAlias, byte[] message, CancellationToken ct)
     {
+        // Released in the finally below, after the answer is settled.
+        KeyStore? keyStore = null;
+        KeyStore.IEntry? entry = null;
         try
         {
-            using var keyStore = KeyStore.GetInstance(AndroidKeyStoreProvider);
+            keyStore = KeyStore.GetInstance(AndroidKeyStoreProvider);
             keyStore!.Load(null);
 
-            using var entry = keyStore.GetEntry(keyAlias, null);
+            entry = keyStore.GetEntry(keyAlias, null);
             if (entry is not KeyStore.PrivateKeyEntry pkEntry)
             {
                 return Task.FromResult(Result.Failure<byte[]>(
@@ -196,6 +199,11 @@ public sealed class AndroidStrongBoxKeyService : IEnclaveKeyService
         {
             return Task.FromResult(Result.Failure<byte[]>(
                 Error.Failure($"Android sign exception: {ex.GetType().Name}: {ex.Message}")));
+        }
+        finally
+        {
+            Release(entry);
+            Release(keyStore);
         }
     }
 

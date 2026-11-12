@@ -377,6 +377,11 @@ public class BootloaderHandlerPinningTests
 
         // SignAsync: the key handle, and the Signature of a direct signature.
         Assert.Contains("finally{if(!signerHandedOn){Release(signer);}Release(privateKey);}", compact);
+        // SignAsync: the key store and its entry, after the method's own catch, so neither can change its answer.
+        var sign = compact.Substring(compact.IndexOf("SignAsync(stringkeyAlias,byte[]message,CancellationTokenct){", StringComparison.Ordinal));
+        sign = sign[..sign.IndexOf("publicTask<Result>DeleteAsync(", StringComparison.Ordinal)];
+        Assert.DoesNotContain("usingvar", sign);
+        Assert.EndsWith("{ex.Message}\")));}finally{Release(entry);Release(keyStore);}}", sign);
         // The key's authentication requirement: the answer is returned from the try, the releases follow.
         Assert.Contains(
             "return(specasKeyInfo)?.IsUserAuthenticationRequired??true;}catch{returntrue;}finally{Release(spec);Release(factory);}",
