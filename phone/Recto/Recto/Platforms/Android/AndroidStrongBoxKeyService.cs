@@ -148,26 +148,49 @@ public sealed class AndroidStrongBoxKeyService : IEnclaveKeyService
                     Error.NotFound($"No Android keystore entry for alias '{keyAlias}'.")));
             }
 
+            // The key's handle is released when this method returns: the
+            // Signature holds its own reference from InitSign on.
+            var privateKey = pkEntry.PrivateKey;
+
             // InitSign succeeds without prior user auth on per-use keys (timeout=0).
             // The Signature is "armed" but cannot complete .sign() until the
             // BiometricPrompt authorizes the CryptoObject wrapping it.
             var signer = Signature.GetInstance(SignatureAlgorithm)
                 ?? throw new InvalidOperationException("Signature.GetInstance returned null.");
-            signer.InitSign(pkEntry.PrivateKey);
-
-            // The poll key (GenerateDeviceKeyAsync) carries no user-auth
-            // requirement: the KEYSTORE says so, not the caller, so no alias
-            // convention can route an approval past the prompt. It signs
-            // directly; every other key goes through BiometricPrompt.
-            if (!RequiresUserAuthentication(pkEntry.PrivateKey!))
+            var signerHandedOn = false;
+            try
             {
-                signer.Update(message);
-                var derSig = signer.Sign()
-                    ?? throw new InvalidOperationException("Signature.Sign returned null.");
-                return Task.FromResult(Result.Success(EcdsaSignatureFormat.DerToRaw(derSig)));
-            }
+                signer.InitSign(privateKey);
 
-            return AuthenticateAndSignAsync(signer, message, keyAlias, ct);
+                // The poll key (GenerateDeviceKeyAsync) carries no user-auth
+                // requirement: the KEYSTORE says so, not the caller, so no alias
+                // convention can route an approval past the prompt. It signs
+                // directly; every other key goes through BiometricPrompt.
+                if (!RequiresUserAuthentication(privateKey!))
+                {
+                    signer.Update(message);
+                    var derSig = signer.Sign()
+                        ?? throw new InvalidOperationException("Signature.Sign returned null.");
+                    return Task.FromResult(Result.Success(EcdsaSignatureFormat.DerToRaw(derSig)));
+                }
+
+                // The prompt signs later, on its callback. From here the
+                // prompt flow owns the Signature and releases it on each of
+                // its endings, a prompt that could not be shown included.
+                signerHandedOn = true;
+                return AuthenticateAndSignAsync(signer, message, keyAlias, ct);
+            }
+            finally
+            {
+                // A direct signature is complete here, so its Signature is
+                // released now: this path runs on every signed read. A
+                // release that fails changes nothing this method answers.
+                if (!signerHandedOn)
+                {
+                    Release(signer);
+                }
+                Release(privateKey);
+            }
         }
         catch (Exception ex)
         {
@@ -204,31 +227,42 @@ public sealed class AndroidStrongBoxKeyService : IEnclaveKeyService
     private static async Task<Result<byte[]>> AuthenticateAndSignAsync(
         Signature signer, byte[] message, string keyAlias, CancellationToken ct)
     {
-        var activity = Microsoft.Maui.ApplicationModel.Platform.CurrentActivity as FragmentActivity
-            ?? throw new InvalidOperationException(
-                "Current activity is not a FragmentActivity; BiometricPrompt requires it.");
-
-        var executor = ContextCompat.GetMainExecutor(activity)
-            ?? throw new InvalidOperationException("ContextCompat.GetMainExecutor returned null.");
-
         var tcs = new TaskCompletionSource<Result<byte[]>>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var callback = new BiometricAuthCallback(tcs, message);
-        var prompt = new BiometricPrompt(activity, executor, callback);
+        try
+        {
+            var activity = Microsoft.Maui.ApplicationModel.Platform.CurrentActivity as FragmentActivity
+                ?? throw new InvalidOperationException(
+                    "Current activity is not a FragmentActivity; BiometricPrompt requires it.");
 
-        var cryptoObject = new BiometricPrompt.CryptoObject(signer);
+            var executor = ContextCompat.GetMainExecutor(activity)
+                ?? throw new InvalidOperationException("ContextCompat.GetMainExecutor returned null.");
 
-        var promptInfo = new BiometricPrompt.PromptInfo.Builder()
-            .SetTitle("Recto")
-            .SetSubtitle($"Authorize signing for {keyAlias}")
-            .SetDescription("Your fingerprint approves this cryptographic operation.")
-            .SetNegativeButtonText("Cancel")
-            .Build();
+            var callback = new BiometricAuthCallback(tcs, message, signer);
+            var prompt = new BiometricPrompt(activity, executor, callback);
 
-        prompt.Authenticate(promptInfo, cryptoObject);
+            var cryptoObject = new BiometricPrompt.CryptoObject(signer);
+
+            var promptInfo = new BiometricPrompt.PromptInfo.Builder()
+                .SetTitle("Recto")
+                .SetSubtitle($"Authorize signing for {keyAlias}")
+                .SetDescription("Your fingerprint approves this cryptographic operation.")
+                .SetNegativeButtonText("Cancel")
+                .Build();
+
+            prompt.Authenticate(promptInfo, cryptoObject);
+        }
+        catch
+        {
+            // No prompt is showing, so nothing else holds the Signature.
+            Release(signer);
+            throw;
+        }
 
         // Honor cancellation by resolving the TCS; the prompt itself doesn't
-        // have a cancel API from outside the user's input.
+        // have a cancel API from outside the user's input. The prompt stays
+        // up and still holds the Signature: the callback releases it when the
+        // prompt ends.
         using var registration = ct.Register(() => tcs.TrySetResult(
             Result.Failure<byte[]>(Error.Failure("Operation cancelled."))));
 
@@ -239,11 +273,23 @@ public sealed class AndroidStrongBoxKeyService : IEnclaveKeyService
     {
         private readonly TaskCompletionSource<Result<byte[]>> _tcs;
         private readonly byte[] _message;
+        private Signature? _signer;
 
-        public BiometricAuthCallback(TaskCompletionSource<Result<byte[]>> tcs, byte[] message)
+        public BiometricAuthCallback(TaskCompletionSource<Result<byte[]>> tcs, byte[] message, Signature signer)
         {
             _tcs = tcs;
             _message = message;
+            _signer = signer;
+        }
+
+        /// <summary>
+        /// Releases the Signature the prompt was given. Called from the
+        /// prompt's two endings, success and error, after which the prompt
+        /// no longer uses it. Safe to call twice.
+        /// </summary>
+        private void ReleaseSigner()
+        {
+            Release(Interlocked.Exchange(ref _signer, null));
         }
 
         public override void OnAuthenticationSucceeded(BiometricPrompt.AuthenticationResult result)
@@ -268,12 +314,23 @@ public sealed class AndroidStrongBoxKeyService : IEnclaveKeyService
                 _tcs.TrySetResult(Result.Failure<byte[]>(
                     Error.Failure($"Android sign post-auth exception: {ex.GetType().Name}: {ex.Message}")));
             }
+            finally
+            {
+                ReleaseSigner();
+            }
         }
 
         public override void OnAuthenticationError(int errorCode, Java.Lang.ICharSequence errString)
         {
-            _tcs.TrySetResult(Result.Failure<byte[]>(
-                Error.Failure($"BiometricPrompt error {errorCode}: {errString}")));
+            try
+            {
+                _tcs.TrySetResult(Result.Failure<byte[]>(
+                    Error.Failure($"BiometricPrompt error {errorCode}: {errString}")));
+            }
+            finally
+            {
+                ReleaseSigner();
+            }
         }
 
         // OnAuthenticationFailed (single attempt didn't match) is intentionally
@@ -291,15 +348,42 @@ public sealed class AndroidStrongBoxKeyService : IEnclaveKeyService
     /// </summary>
     private static bool RequiresUserAuthentication(IPrivateKey privateKey)
     {
+        // Both are read once and released: this check runs on every signed
+        // read. The answer is settled before either release, and a release
+        // that fails does not change it.
+        KeyFactory? factory = null;
+        IDisposable? spec = null;
         try
         {
-            var factory = KeyFactory.GetInstance(privateKey.Algorithm, AndroidKeyStoreProvider);
-            var info = factory?.GetKeySpec(privateKey, Java.Lang.Class.FromType(typeof(KeyInfo))) as KeyInfo;
-            return info?.IsUserAuthenticationRequired ?? true;
+            factory = KeyFactory.GetInstance(privateKey.Algorithm, AndroidKeyStoreProvider);
+            spec = factory?.GetKeySpec(privateKey, Java.Lang.Class.FromType(typeof(KeyInfo)));
+            return (spec as KeyInfo)?.IsUserAuthenticationRequired ?? true;
         }
         catch
         {
             return true;
+        }
+        finally
+        {
+            Release(spec);
+            Release(factory);
+        }
+    }
+
+    /// <summary>
+    /// Releases a platform object's handle, best-effort: a release that
+    /// throws is dropped, so it can never replace a result or an exception
+    /// already in hand.
+    /// </summary>
+    private static void Release(IDisposable? handle)
+    {
+        try
+        {
+            handle?.Dispose();
+        }
+        catch
+        {
+            // The collector releases it later.
         }
     }
 
