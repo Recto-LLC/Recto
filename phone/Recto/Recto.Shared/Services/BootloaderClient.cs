@@ -542,8 +542,14 @@ public sealed class BootloaderClient : IBootloaderClient
     /// <summary>The route a log line names for <paramref name="url"/>: one of <see cref="LoggedRoutes"/>, or
     /// <see cref="UnlistedRoute"/>.</summary>
     private static string RouteOf(string url)
+        => LoggedRouteOfPath(Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.AbsolutePath : string.Empty);
+
+    /// <summary>The route a log line names for a URL path (no host, no query): one of the fixed list, with a
+    /// respond's request id replaced by <c>{id}</c>, or the unlisted-route marker. The read signer names its
+    /// routes through this, so the two never differ.</summary>
+    public static string LoggedRouteOfPath(string? path)
     {
-        var path = Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.AbsolutePath : string.Empty;
+        path ??= string.Empty;
         var at = path.IndexOf("/v0.4/", StringComparison.Ordinal);
         if (at < 0) return UnlistedRoute;
         var route = path[at..];

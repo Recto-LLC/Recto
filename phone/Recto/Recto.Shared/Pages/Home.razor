@@ -3156,7 +3156,11 @@
                 return;
             }
 
-            string? capturedPin = TryCaptureBootloaderPin(_bootloaderUrl);
+            // The certificate this pairing saw. It is only READ here: the
+            // checks below can still refuse the pairing, and a refused
+            // pairing must leave no anchor behind for its host. The anchor
+            // is set once the pairing is confirmed and saved, below.
+            string? observedPin = ObservedBootloaderPin(_bootloaderUrl);
 
             var registration = registerResult.Value;
 
@@ -3207,7 +3211,7 @@
                     .Select(s => new ManagedSecretRef(s.Service, s.SecretName, s.Algorithm))
                     .ToArray(),
                 PairedAt: DateTimeOffset.UtcNow,
-                BootloaderSpkiPin: capturedPin,
+                BootloaderSpkiPin: observedPin,
                 // Build 12: capture the bootloader's advertised failover list
                 // at pairing time (null on single-instance deployments).
                 BootloaderUrls: registration.BootloaderUrls,
@@ -3223,6 +3227,10 @@
                 _errorMessage = saveResult.Error.Message;
                 return;
             }
+
+            // Confirmed: registered, the poll key echoed, the identity
+            // checked, the state saved. Only now does the host get its anchor.
+            RestorePin(pairedState);
 
             _paired = pairedState;
             RebuildFailoverCandidates();
@@ -5859,15 +5867,18 @@
 
     // --- Cert pinning helpers ---
 
-    private string? TryCaptureBootloaderPin(string bootloaderUrl)
+    /// <summary>
+    /// The certificate pin the last connection to this bootloader showed, or
+    /// null. A read: it sets no anchor. A pairing records it in its state and
+    /// <see cref="RestorePin"/> sets the anchor from that state once the
+    /// pairing is confirmed.
+    /// </summary>
+    private string? ObservedBootloaderPin(string bootloaderUrl)
     {
         try
         {
-            var host = new Uri(bootloaderUrl).Host;
-            var observed = Pinning.GetObservedPin(host);
-            if (string.IsNullOrEmpty(observed)) return null;
-            Pinning.SetPin(host, observed);
-            return observed;
+            var observed = Pinning.GetObservedPin(new Uri(bootloaderUrl).Host);
+            return string.IsNullOrEmpty(observed) ? null : observed;
         }
         catch
         {

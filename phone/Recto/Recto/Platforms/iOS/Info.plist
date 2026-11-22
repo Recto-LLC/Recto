@@ -24,6 +24,13 @@
         <key>NSAllowsLocalNetworking</key>
         <true/>
     </dict>
+    <!--
+      Export compliance: the publisher's standing answer to App Store
+      Connect's encryption question for this app. Declared here so each
+      upload carries it and the question is not asked again per build.
+    -->
+    <key>ITSAppUsesNonExemptEncryption</key>
+    <false/>
     <key>LSRequiresIPhoneOS</key>
     <true/>
     <!--

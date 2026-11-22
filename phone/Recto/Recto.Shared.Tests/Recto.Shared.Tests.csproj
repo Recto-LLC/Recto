@@ -6,7 +6,14 @@
 		<IsPackable>false</IsPackable>
 		<IsTestProject>true</IsTestProject>
 		<NoWarn>$(NoWarn);CS1591</NoWarn>
+		<!-- The Play gates (phone/gates/PlayGates.cs) are an inline build task in Recto.csproj. Compiled here
+		     with this symbol, the file leaves its build task out and the checks are tested directly. -->
+		<DefineConstants>$(DefineConstants);PLAY_GATES_LOGIC_ONLY</DefineConstants>
 	</PropertyGroup>
+
+	<ItemGroup>
+		<Compile Include="..\..\gates\PlayGates.cs" Link="Gates\PlayGates.cs" />
+	</ItemGroup>
 
 	<ItemGroup>
 		<PackageReference Include="Microsoft.NET.Test.Sdk" />

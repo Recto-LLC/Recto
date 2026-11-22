@@ -14,8 +14,7 @@ namespace Recto.Shared.Tests.QR;
 /// Each test below has a sister test in
 /// <c>tests/test_qr_encode.py</c> (Python) — same input, same
 /// expected byte sequence. If these drift, a QR-wrapped capability
-/// JWS or multi-witness contract signed on Python won't verify on
-/// C# (and vice versa).
+/// JWS signed on Python won't verify on C# (and vice versa).
 /// </para>
 /// </summary>
 public class QrCanonicalJsonTests

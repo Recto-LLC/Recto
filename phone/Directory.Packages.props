@@ -29,6 +29,13 @@
     <PackageVersion Include="Xamarin.AndroidX.Activity.Ktx" Version="1.12.4.1" />
     <PackageVersion Include="Xamarin.AndroidX.SavedState.SavedState.Ktx" Version="1.4.0.2" />
 
+    <!-- DataStore's native library (libdatastore_shared_counter.so) must be aligned for 16 KB pages
+         (Google Play's requirement for 64-bit libraries). 1.2.0.2 is the version Firebase Messaging's
+         graph resolves today and its library is aligned; the direct reference in Recto.csproj holds it
+         there, and the build's Play gates read the alignment from the package. Raise it, never lower it,
+         and let the gates judge the new one. -->
+    <PackageVersion Include="Xamarin.AndroidX.DataStore.Core.Android" Version="1.2.0.2" />
+
     <!-- ZXing.Net.Maui RETIRED Build 5 (2026-06-02). Both packages
          crashed on iOS first-permission-grant AND Android 16
          16KB-page-alignment. Replaced by native bindings (iOS uses

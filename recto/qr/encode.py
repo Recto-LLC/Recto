@@ -226,9 +226,8 @@ def qr_encode_payload(
 ) -> bytes:
     """Encode a structured QRPayloadV1 as a QR code image.
 
-    For artifacts that need more than a bare JWS — multi-witness
-    contracts, structured citation receipts, promotion certificates
-    with embedded metadata. The payload is canonical-JSON-encoded
+    For artifacts that need more than a bare JWS — structured citation
+    receipts, promotion certificates with embedded metadata. The payload is canonical-JSON-encoded
     (byte-parity with `recto.capability.jwt._canonical_json`) before
     rendering, so the QR's bytes are reproducible across runtimes.
 

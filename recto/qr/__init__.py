@@ -15,12 +15,8 @@ This module ships v1 ENCODE-only:
     any single-payload artifact where the JWS string is self-
     contained)
   - `qr_encode_payload(payload)` — structured QRPayloadV1 →
-    QR PNG/SVG (used for multi-witness contracts, citation receipts,
-    promotion certificates, future-N rich-payload kinds)
-  - `create_multi_witness_contract(...)` + `add_witness_signature(...)`
-    + `encode_multi_witness_qr(...)` — the multi-witness contract
-    extension (each witness's signature added before re-rendering;
-    final QR IS the canonical contract document)
+    QR PNG/SVG (used for citation receipts, promotion certificates,
+    future-N rich-payload kinds)
 
 Decode (QR image → JWS string / payload dict) is deferred to v2:
   - Recto Phone (the canonical first consumer at Phase 2) has its
@@ -64,12 +60,6 @@ from recto.qr.pair import (
     build_pair_url,
     build_service_pair_url,
 )
-from recto.qr.multi_witness import (
-    add_witness_signature,
-    canonical_signing_input_for_witness,
-    create_multi_witness_contract,
-    encode_multi_witness_qr,
-)
 from recto.qr.types import (
     QR_FORMAT_PNGV1,
     QR_FORMAT_SVGV1,
@@ -78,10 +68,8 @@ from recto.qr.types import (
     QR_MAX_SIZE_BYTES_V40_M,
     QR_MAX_SIZE_BYTES_V40_Q,
     QR_SCHEMA_VERSION,
-    MultiWitnessContract,
     QRMeta,
     QRPayloadV1,
-    Witness,
 )
 
 __all__ = [
@@ -90,11 +78,6 @@ __all__ = [
     "qr_encode_payload",
     "build_qr_meta",
     "canonical_signing_input",
-    # Multi-witness contract primitives
-    "create_multi_witness_contract",
-    "add_witness_signature",
-    "canonical_signing_input_for_witness",
-    "encode_multi_witness_qr",
     # Pair-deep-link URL emitter (banked 2026-06-01 for #41)
     "build_pair_url",
     "build_service_pair_url",
@@ -109,8 +92,6 @@ __all__ = [
     # Wire-format dataclasses
     "QRMeta",
     "QRPayloadV1",
-    "MultiWitnessContract",
-    "Witness",
     # Constants
     "QR_SCHEMA_VERSION",
     "QR_FORMAT_PNGV1",

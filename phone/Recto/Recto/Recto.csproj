@@ -81,7 +81,12 @@
 		     version. -->
 		<!-- 1.2.1 -> 1.2.2 (2026-11-07): a profile card's master signature is made only over a
 		     signing input the phone has read back against the card, and a sign, an address on a card
-		     or a revoke never creates a recovery phrase (pairing a service or a restore does). -->
+		     or a revoke never creates a recovery phrase (pairing a service or a restore does).
+		     Build 20 also carries (2026-11-21, before its first upload): a biometric prompt that cannot
+		     show answers instead of waiting for ever and releases its own objects; a certificate anchor is
+		     set only once a pairing is confirmed; a failed read signature is tried once more and an
+		     unsigned read says why; the Play gates run on the Release package; iOS declares its
+		     export-compliance answer. docs/release-notes-1.2.2.md has the whole list. -->
 		<ApplicationDisplayVersion>1.2.2</ApplicationDisplayVersion>
 		<!-- Build 5 (2026-06-02): explicit Version pin to fix NU1105.
 		     MAUI auto-derives PackageVersion from ApplicationDisplayVersion
@@ -494,14 +499,16 @@
 	       AndroidSigningKeyAlias = "upload" (operator-chosen, stable name
 	         used in every Play Console submission).
 
-	     Passwords MUST NEVER be embedded in this csproj — they get passed
-	     via the build command as MSBuild properties:
+	     Passwords MUST NEVER be embedded in this csproj, and never be
+	     written as a property's VALUE on the command line either: the
+	     shell expands the value into the process's arguments, and the
+	     build echoes its properties when a switch is malformed. Name the
+	     environment variable instead; the Android build reads it itself:
 	         dotnet publish -f net10.0-android -c Release \
-	           -p:AndroidSigningKeyPass=$KEYSTORE_PASS \
-	           -p:AndroidSigningStorePass=$KEYSTORE_PASS
-	     The env-var $KEYSTORE_PASS gets sourced from the operator's
-	     ~/.zprofile (out-of-tree, never committed). See DEPLOY.md for
-	     the canonical AAB build recipe.
+	           -p:AndroidSigningKeyPass=env:KEYSTORE_PASS \
+	           -p:AndroidSigningStorePass=env:KEYSTORE_PASS
+	     KEYSTORE_PASS is set in the build host's own shell profile
+	     (out-of-tree, never committed).
 
 	     AndroidPackageFormat=aab emits the App Bundle format Play Console
 	     requires (APK is deprecated for new submissions since 2021). -->
@@ -513,6 +520,10 @@
 		<!-- R8 shrinks and optimizes the Java/DEX side (Play's DEX optimization requirement); the keep rules
 		     for what a binding reaches by name are in Platforms/Android/proguard.cfg. -->
 		<AndroidLinkTool>r8</AndroidLinkTool>
+		<!-- R8's mapping is written beside the package (mapping.txt) and carried inside the bundle, where Play
+		     reads it to de-obfuscate a Java stack. It is the default with r8; it is named here so the Play
+		     gates below, which fail a bundle without it, do not rest on a default. -->
+		<AndroidCreateProguardMappingFile>true</AndroidCreateProguardMappingFile>
 	</PropertyGroup>
 	<ItemGroup Condition="$(TargetFramework.Contains('-android'))">
 		<ProguardConfiguration Include="Platforms\Android\proguard.cfg" />
@@ -593,6 +604,11 @@
 		<PackageReference Include="Xamarin.AndroidX.Fragment.Ktx" />
 		<PackageReference Include="Xamarin.AndroidX.Activity.Ktx" />
 		<PackageReference Include="Xamarin.AndroidX.SavedState.SavedState.Ktx" />
+		<!-- DataStore arrives through Firebase Messaging and ships a native library
+		     (libdatastore_shared_counter.so). Named directly so its version is this project's choice and not
+		     whatever the graph resolves: the pinned binding's library is aligned for 16 KB pages, and the
+		     Play gates below read that alignment from the package on every Release build. -->
+		<PackageReference Include="Xamarin.AndroidX.DataStore.Core.Android" />
 		<!-- Build 6 (2026-06-02): CameraX 1.5+ + ML Kit BarcodeScanning
 		     package refs retired alongside the in-app QR scanner
 		     (Build 5's solution to the ZXing.Net.Maui crashes). The
@@ -619,4 +635,42 @@
 	<ItemGroup>
 		<ProjectReference Include="..\Recto.Shared\Recto.Shared.csproj" />
 	</ItemGroup>
+	<!-- THE PLAY GATES. What Google Play checks on an upload is checked here, on the package this build just
+	     signed, so a miss fails the build and not the upload:
+	       - the DEX sum (every .dex in the package, uncompressed) is under RectoPlayDexByteLimit;
+	       - every 64-bit native library's loadable segments are aligned to 16 KB (read from each .so's ELF
+	         program headers; a library that cannot be read fails too);
+	       - a bundle carries its R8 mapping.
+	     The package checked is the one THIS build made: the signed package in AndroidPackageFormat, and
+	     the signed .apk beside it only when that format is aab and AndroidPackageFormats also names apk
+	     (the universal .apk the build then makes from the bundle). Each must exist and must not be older
+	     than the app assembly this build compiled. A package left in the output folder by an earlier build
+	     is never the one that passes.
+	     It also writes native-debug-symbols.zip beside the package: the libraries that still carry a symbol
+	     table, one folder per ABI, the layout Google documents for a hand-made symbols zip. No upload has
+	     confirmed that Play takes it. The build log lists the DEX sum and
+	     every library with its alignment ("Play gates:" lines; a Release build whose log has none did not
+	     run them). There is no switch that skips the gates; the limit is a property so a change to it is a
+	     visible edit. The checks are phone/gates/PlayGates.cs, compiled here as an inline task and compiled
+	     into Recto.Shared.Tests, which tests them.
+	     Two hooks, because the package is made in two places: a command-line build or publish signs it
+	     inside Build, and an IDE build signs it in SignAndroidPackage. Each hook runs the one gate target,
+	     and a target runs once per build. -->
+	<PropertyGroup>
+		<RectoPlayDexByteLimit Condition="'$(RectoPlayDexByteLimit)' == ''">10000000</RectoPlayDexByteLimit>
+	</PropertyGroup>
+	<UsingTask TaskName="CheckPlayGates" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+		<Task>
+			<Code Type="Class" Language="cs" Source="$(MSBuildThisFileDirectory)../../gates/PlayGates.cs" />
+		</Task>
+	</UsingTask>
+	<Target Name="RectoPlayGatesAfterBuild" AfterTargets="Build" DependsOnTargets="RectoPlayGates" Condition="$(TargetFramework.Contains('-android')) AND '$(Configuration)' == 'Release' AND '$(BuildingInsideVisualStudio)' != 'true'" />
+	<Target Name="RectoPlayGatesAfterSign" AfterTargets="SignAndroidPackage" DependsOnTargets="RectoPlayGates" Condition="$(TargetFramework.Contains('-android')) AND '$(Configuration)' == 'Release'" />
+	<Target Name="RectoPlayGates">
+		<ItemGroup>
+			<RectoPlayPackage Include="$(OutDir)$(ApplicationId)-Signed.$(AndroidPackageFormat)" />
+			<RectoPlayPackage Include="$(OutDir)$(ApplicationId)-Signed.apk" Condition="'$(AndroidPackageFormat)' == 'aab' AND $(AndroidPackageFormats.Contains('apk'))" />
+		</ItemGroup>
+		<CheckPlayGates Packages="@(RectoPlayPackage)" DexByteLimit="$(RectoPlayDexByteLimit)" SymbolsZip="$(OutDir)native-debug-symbols.zip" NotOlderThan="@(IntermediateAssembly->'%(FullPath)')" />
+	</Target>
 </Project>

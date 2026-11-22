@@ -57,7 +57,7 @@ SDKs), and the phone app. Three audiences, three channels. Ask which package a
 feature belongs in before shaping the implementation.
 
 **13. The artifact is the canonical record, not a ledger row.** Signed payloads
-— capability JWS, pairing JWS, multi-witness contracts — are portable: the
+— capability JWS, pairing JWS — are portable: the
 bytes themselves are the record. Transports (HTTP, folder drop, QR) are
 interchangeable serializations of the same payload. **Verification must never
 require any particular runtime to still be alive.**

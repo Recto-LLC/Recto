@@ -130,8 +130,8 @@ qr = [
     "Pillow>=10.0", # HPND-licensed, required by qrcode for PNG output
 ]
    # `pip install recto[qr]` enables the QR transport (recto.qr: signed
-   # JWS payloads and QRPayloadV1 envelopes as PNG or SVG, and
-   # multi-witness contracts; hard rule 13). Encode only. The wire format
+   # JWS payloads and QRPayloadV1 envelopes as PNG or SVG; hard rule 13).
+   # Encode only. The wire format
    # is recto/qr/SPEC.md.
 
 [project.urls]

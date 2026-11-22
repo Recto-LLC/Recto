@@ -8,19 +8,13 @@ canonical record, NOT a row in any centralized database. QR codes
 serve as one transport layer for those bytes (alongside HTTP and the
 folder-drop event bus).
 
-This module defines the shared envelope schema. Two top-level shapes:
+This module defines the shared envelope schema, one top-level shape:
 
-  1. **QRPayloadV1** — generic signed-payload envelope. Used for
-     single-signer artifacts (capability JWS, pairing JWS, manumission
-     JWS, future-N). Body is kind-specific.
+  **QRPayloadV1** — generic signed-payload envelope. Used for
+  single-signer artifacts (capability JWS, pairing JWS, manumission
+  JWS, future-N). Body is kind-specific.
 
-  2. **MultiWitnessContract** — multi-signer extension. Used for
-     contracts that grow as witnesses sign. The QR's content GROWS as
-     it travels — encoded in the payload itself, not in a separate
-     ledger. The final QR (after all required_witnesses sign) IS the
-     canonical contract document.
-
-Both shapes carry a **_qr_meta** envelope describing how the payload
+It carries a **_qr_meta** envelope describing how the payload
 survives QR transport (format versioning, max-size bookkeeping,
 fragmentation support for >2953-byte payloads). The QR's bytes are
 the source of truth; metadata enables future format evolution
@@ -118,7 +112,7 @@ class QRPayloadV1:
     # Canonical kind-key identifying the payload's semantic class.
     # Recto-side canonical kinds: "capability_request", "pairing_jws",
     # "manumission_jws", "citation_receipt", "thru_receipt",
-    # "promotion_certificate", "agent_lease", "multi_witness_contract".
+    # "promotion_certificate", "agent_lease".
     # Downstream consumers may add their own kind-keys; uniqueness is
     # the only constraint.
     kind: str = ""
@@ -155,88 +149,3 @@ class QRPayloadV1:
     # Transport metadata. NOT signed. See QRMeta docstring.
     _qr_meta: QRMeta = field(default_factory=QRMeta)
 
-
-@dataclass(frozen=True)
-class Witness:
-    """One witness signature in a multi-witness contract.
-
-    Each witness signs the canonical-JSON encoding of the contract's
-    state AT THE TIME OF THEIR SIGNATURE (i.e. their entry is appended
-    AFTER signing). The QR re-renders after each witness signs;
-    consumers can verify the chain by replaying signatures in order.
-    """
-
-    # The witness's principal identifier (matches one entry in the
-    # parent contract's `required_witnesses` list).
-    principal: str = ""
-
-    # Base64url-encoded signature over the contract's canonical-JSON
-    # encoding at the time this witness signed (i.e. with the
-    # `witnesses` list containing all prior witnesses but NOT this one).
-    signature: str = ""
-
-    # Unix timestamp (seconds since epoch, UTC) when this witness
-    # signed. Enables audit-trail reconstruction.
-    signed_at: int = 0
-
-
-@dataclass(frozen=True)
-class MultiWitnessContract:
-    """Multi-signer contract that grows as witnesses sign.
-
-    The originator signs a base claim with a `required_witnesses` list;
-    sends the QR around; each required witness adds their signature
-    before re-rendering. The final QR (after all required_witnesses
-    have signed) IS the canonical contract document. Print on paper,
-    store in vault, photograph forever — the chain back to all
-    participants is intact in the bytes.
-
-    First concrete use case: a consumer's first user-to-user citation
-    receipt as a portable QR artifact OR the first civic-office promotion
-    certificate (per that consumer's own rules + civic-office model).
-
-    Cross-reference: Hard Rule #13 (docs/hard-rules.md) —
-    artifact-as-canonical-record over ledger-as-canonical-record.
-    """
-
-    # Schema version. Always 1 for MultiWitnessContract.
-    v: int = QR_SCHEMA_VERSION
-
-    # Always "multi_witness_contract". Pinned in the schema for
-    # discriminator-style dispatch.
-    kind: str = "multi_witness_contract"
-
-    # Originator principal — the party who created the base claim.
-    iss: str = ""
-
-    # The subject of the contract — what's being contracted on.
-    # Shape varies by contract type (citation, lease, promotion, etc.).
-    subject: dict[str, Any] = field(default_factory=dict)
-
-    # Ordered list of principal identifiers expected to sign. Sign
-    # order is enforced when verifying — witnesses must appear in the
-    # `witnesses` list in the same order as `required_witnesses` (or
-    # not at all if not yet signed).
-    required_witnesses: tuple[str, ...] = ()
-
-    # Witnesses who have signed so far. Sorted in sign order. The
-    # contract is `completed` when this list's length equals
-    # `len(required_witnesses)` and each witness's principal matches
-    # the corresponding entry in `required_witnesses`.
-    witnesses: tuple[Witness, ...] = ()
-
-    # Unix timestamp when the final required witness signed. None
-    # while the contract is still gathering signatures.
-    completed_at: int | None = None
-
-    # Transport metadata. NOT signed. See QRMeta docstring.
-    _qr_meta: QRMeta = field(default_factory=QRMeta)
-
-    def is_complete(self) -> bool:
-        """True when all required_witnesses have signed."""
-        if len(self.witnesses) != len(self.required_witnesses):
-            return False
-        for required, witness in zip(self.required_witnesses, self.witnesses):
-            if witness.principal != required:
-                return False
-        return True

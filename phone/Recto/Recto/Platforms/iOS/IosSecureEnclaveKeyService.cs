@@ -3,12 +3,14 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Foundation;
+using LocalAuthentication;
 using ObjCRuntime;
 using Recto.Shared.Common;
 using Recto.Shared.Models;
 using Recto.Shared.Protocol.V04;
 using Recto.Shared.Services;
 using Security;
+using UIKit;
 
 namespace Recto.Platforms.iOSImpl;
 
@@ -208,6 +210,138 @@ public sealed class IosSecureEnclaveKeyService : IEnclaveKeyService
         }
     }
 
+    /// <summary>
+    /// Signs with a device key and never prompts. On iOS the prompt is the
+    /// key's access control, raised by the enclave when the key is used, so
+    /// "never prompt" is said to the system: the key is loaded under an
+    /// authentication context whose <c>InteractionNotAllowed</c> is true,
+    /// and a use that would need Face ID / Touch ID then fails at once in
+    /// place of asking. That failure is answered as
+    /// <see cref="DeviceKeyRefusal.Gated"/>; nothing is signed. A device key
+    /// (<see cref="GenerateDeviceKeyAsync"/>) has no biometric control and
+    /// signs under the same context exactly as before. This is the read
+    /// signer's entry, called on a timer.
+    /// <para>
+    /// "Interaction not allowed" has a second meaning, and it is the common
+    /// one: the keys here are readable only while the device is unlocked, so
+    /// on a LOCKED device the keychain answers the same status for a key
+    /// that is not gated at all. The two are told apart, and a locked device
+    /// is answered as <see cref="DeviceKeyRefusal.Locked"/>:
+    /// the status when the key is LOADED is always the locked device (a
+    /// load needs no authentication); at signing, LocalAuthentication's own
+    /// "not interactive" is the gated key, and the keychain status is the
+    /// gated key only while the device's protected data is available.
+    /// </para>
+    /// </summary>
+    public Task<Result<byte[]>> SignWithDeviceKeyAsync(string keyAlias, byte[] message, CancellationToken ct)
+    {
+        try
+        {
+            using var noPrompt = new LAContext { InteractionNotAllowed = true };
+            using var privateKey = LoadPrivateKey(keyAlias, noPrompt, out var status);
+            if (status == SecStatusCode.InteractionNotAllowed)
+            {
+                // Loading a key reference asks for no authentication, so
+                // this is the device being locked, never the key being gated.
+                return Task.FromResult(Result.Failure<byte[]>(DeviceKeyRefusal.Locked()));
+            }
+            if (privateKey is null)
+            {
+                return Task.FromResult(Result.Failure<byte[]>(
+                    Error.NotFound($"No iOS Secure Enclave key found for alias '{keyAlias}'.")));
+            }
+
+            using var data = NSData.FromArray(message);
+            var derSignature = privateKey.CreateSignature(
+                SecKeyAlgorithm.EcdsaSignatureMessageX962Sha256,
+                data,
+                out var error);
+
+            if (derSignature is null || error is not null)
+            {
+                return Task.FromResult(Result.Failure<byte[]>(ReadInteractionFailure(error) switch
+                {
+                    InteractionFailure.Gated => DeviceKeyRefusal.Gated(),
+                    InteractionFailure.Locked => DeviceKeyRefusal.Locked(),
+                    _ => Error.Failure($"Secure Enclave sign failed: {error?.LocalizedDescription ?? "unknown"}"),
+                }));
+            }
+
+            var rawSignature = EcdsaSignatureFormat.DerToRaw(derSignature.ToArray());
+            return Task.FromResult(Result.Success(rawSignature));
+        }
+        catch (Exception ex)
+        {
+            return Task.FromResult(Result.Failure<byte[]>(
+                Error.Failure($"iOS enclave sign exception: {ex.GetType().Name}: {ex.Message}")));
+        }
+    }
+
+    // errSecInteractionNotAllowed, and LAError.notInteractive in the
+    // LocalAuthentication error domain: the two shapes in which the system
+    // reports "this needed the user and interaction was not allowed".
+    private const long ErrSecInteractionNotAllowed = -25308;
+    private const long LaErrorNotInteractive = -1004;
+    private const string LaErrorDomain = "com.apple.LocalAuthentication";
+
+    private enum InteractionFailure
+    {
+        /// <summary>Some other failure.</summary>
+        None,
+
+        /// <summary>The key needs the user, and interaction was not allowed.</summary>
+        Gated,
+
+        /// <summary>The device is locked.</summary>
+        Locked,
+    }
+
+    /// <summary>
+    /// Reads a signing failure, and the errors it wraps. LocalAuthentication
+    /// saying "not interactive" is the key's own access control asking for
+    /// the user: gated. The keychain saying "interaction not allowed" is the
+    /// gated key only while the device's protected data is available;
+    /// otherwise the device is locked.
+    /// </summary>
+    private static InteractionFailure ReadInteractionFailure(NSError? error)
+    {
+        for (var depth = 0; error is not null && depth < 4; depth++)
+        {
+            var code = (long)error.Code;
+            if (code == LaErrorNotInteractive && error.Domain == LaErrorDomain)
+            {
+                return InteractionFailure.Gated;
+            }
+            if (code == ErrSecInteractionNotAllowed)
+            {
+                return ProtectedDataAvailable() ? InteractionFailure.Gated : InteractionFailure.Locked;
+            }
+            error = error.UserInfo?[NSError.UnderlyingErrorKey] as NSError;
+        }
+        return InteractionFailure.None;
+    }
+
+    /// <summary>
+    /// True while the device is unlocked enough to read protected data. Read
+    /// on the main thread, where the application object is read. When it
+    /// cannot be read the answer is false: the failure is then reported as a
+    /// locked device, an ordinary state, and never as a gated key.
+    /// </summary>
+    private static bool ProtectedDataAvailable()
+    {
+        try
+        {
+            var available = false;
+            var application = UIApplication.SharedApplication;
+            application.InvokeOnMainThread(() => available = application.ProtectedDataAvailable);
+            return available;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     public Task<Result> DeleteAsync(string keyAlias, CancellationToken ct)
     {
         try
@@ -225,6 +359,13 @@ public sealed class IosSecureEnclaveKeyService : IEnclaveKeyService
     // --- internals ---
 
     private static SecKey? LoadPrivateKey(string keyAlias)
+        => LoadPrivateKey(keyAlias, context: null, out _);
+
+    /// <summary>
+    /// Loads the key, under <paramref name="context"/> when one is given:
+    /// the key then carries that authentication context into every use.
+    /// </summary>
+    private static SecKey? LoadPrivateKey(string keyAlias, LAContext? context, out SecStatusCode status)
     {
         var query = new SecRecord(SecKind.Key)
         {
@@ -232,8 +373,12 @@ public sealed class IosSecureEnclaveKeyService : IEnclaveKeyService
             ApplicationTag = TagFor(keyAlias),
             KeyType = SecKeyType.EC,
         };
+        if (context is not null)
+        {
+            query.AuthenticationContext = context;
+        }
 
-        var result = SecKeyChain.QueryAsConcreteType(query, out var status);
+        var result = SecKeyChain.QueryAsConcreteType(query, out status);
         return status == SecStatusCode.Success ? result as SecKey : null;
     }
 

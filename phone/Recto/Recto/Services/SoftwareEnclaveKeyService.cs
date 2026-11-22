@@ -92,6 +92,14 @@ public sealed class SoftwareEnclaveKeyService : IEnclaveKeyService
         }
     }
 
+    /// <summary>
+    /// Said outright: this software key service has no user-authentication
+    /// gate on any key, so its signing never prompts and a device key signs
+    /// exactly as any other.
+    /// </summary>
+    public Task<Result<byte[]>> SignWithDeviceKeyAsync(string keyAlias, byte[] message, CancellationToken ct)
+        => SignAsync(keyAlias, message, ct);
+
     public async Task<Result<byte[]>> SignAsync(string keyAlias, byte[] message, CancellationToken ct)
     {
         try

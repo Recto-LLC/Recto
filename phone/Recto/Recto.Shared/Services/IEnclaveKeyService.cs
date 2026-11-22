@@ -1,3 +1,4 @@
+using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Recto.Shared.Common;
@@ -61,6 +62,55 @@ public interface IEnclaveKeyService
     /// </summary>
     Task<Result<byte[]>> SignAsync(string keyAlias, byte[] message, CancellationToken ct);
 
+    /// <summary>
+    /// Signs with a DEVICE key (<see cref="GenerateDeviceKeyAsync"/>) and
+    /// never prompts. An implementation that can tell a key is gated by user
+    /// authentication refuses it here with <see cref="DeviceKeyRefusal.Gated"/>
+    /// before any prompt is raised: a read is signed on a timer, and a timer
+    /// must never put a biometric prompt on the screen.
+    /// <para>
+    /// THE DEFAULT REFUSES (<see cref="DeviceKeyRefusal.NoEntry"/>). It does
+    /// not fall back to <see cref="SignAsync"/>, which may prompt: a key
+    /// service that gates keys and forgot this method would then prompt on
+    /// the timer. Every implementation says for itself that its device-key
+    /// signing cannot prompt.
+    /// </para>
+    /// </summary>
+    Task<Result<byte[]>> SignWithDeviceKeyAsync(string keyAlias, byte[] message, CancellationToken ct)
+        => Task.FromResult(Result.Failure<byte[]>(DeviceKeyRefusal.NoEntry()));
+
     /// <summary>Removes the keypair under <paramref name="keyAlias"/>. No-op if absent.</summary>
     Task<Result> DeleteAsync(string keyAlias, CancellationToken ct);
+}
+
+/// <summary>
+/// What a key service answers a device-key signing it will not make. Each is
+/// an error with its own code, so the read signer can name the reason
+/// without reading a sentence.
+/// </summary>
+public static class DeviceKeyRefusal
+{
+    /// <summary>The key needs user authentication: signing would raise a prompt.</summary>
+    public const string GatedCode = "DeviceKeyGated";
+
+    /// <summary>The device is locked, and the key is not readable while it is.</summary>
+    public const string LockedCode = "DeviceLocked";
+
+    /// <summary>The key service has no device-key signing of its own.</summary>
+    public const string NoEntryCode = "DeviceKeyNoEntry";
+
+    public static Error Gated()
+        => new(GatedCode, "This key needs user authentication, so it cannot sign as a device key.", string.Empty);
+
+    public static Error Locked()
+        => new(LockedCode, "The device is locked, so its device key cannot be used yet.", string.Empty);
+
+    public static Error NoEntry()
+        => new(NoEntryCode, "This key service has no device-key signing.", string.Empty);
+
+    /// <summary>True when <paramref name="error"/> is the gated refusal.</summary>
+    public static bool IsGated(Error error) => string.Equals(error.Method, GatedCode, StringComparison.Ordinal);
+
+    /// <summary>True when <paramref name="error"/> is the locked-device refusal.</summary>
+    public static bool IsLocked(Error error) => string.Equals(error.Method, LockedCode, StringComparison.Ordinal);
 }

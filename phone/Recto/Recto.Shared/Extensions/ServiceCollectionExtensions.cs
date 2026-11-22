@@ -9,8 +9,6 @@ using Recto.Shared.Common.Handlers;
 using Recto.Shared.Services;
 using Scrutor;
 
-[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Recto.Shared.Tests")]
-
 namespace Recto.Shared.Extensions;
 
 public static class ServiceCollectionExtensions
@@ -105,11 +103,15 @@ public static class ServiceCollectionExtensions
 /// Nothing the collection or its queueing does reaches the request: a fault
 /// there is dropped, and the request's own response or exception stands.
 /// </para>
+/// <para>
+/// Public so the tests reach it as any other caller would: this assembly
+/// opens its internals to no other assembly.
+/// </para>
 /// </summary>
-internal sealed class RequestCountCollectionHandler : DelegatingHandler
+public sealed class RequestCountCollectionHandler : DelegatingHandler
 {
     /// <summary>One collection a minute at one request every three seconds.</summary>
-    internal const int DefaultRequestsPerCollection = 20;
+    public const int DefaultRequestsPerCollection = 20;
 
     private readonly int _requestsPerCollection;
     private readonly Action _collect;
@@ -120,7 +122,7 @@ internal sealed class RequestCountCollectionHandler : DelegatingHandler
     /// <param name="requestsPerCollection">Requests between collections; zero for none.</param>
     /// <param name="collect">The collection itself; a full garbage collection when null.</param>
     /// <param name="queue">Runs the collection off the caller's thread; the thread pool when null.</param>
-    internal RequestCountCollectionHandler(
+    public RequestCountCollectionHandler(
         int requestsPerCollection, Action? collect = null, Action<Action>? queue = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(requestsPerCollection);

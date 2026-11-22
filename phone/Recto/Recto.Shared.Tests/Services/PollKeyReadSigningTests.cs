@@ -290,6 +290,9 @@ public class PollKeyReadSigningTests
             SignCalls++; LastAlias = keyAlias; LastMessage = message;
             return Task.FromResult(Result.Success(new byte[64]));
         }
+        // No gate on any key here, so a device key signs as any other.
+        public Task<Result<byte[]>> SignWithDeviceKeyAsync(string keyAlias, byte[] message, CancellationToken ct)
+            => SignAsync(keyAlias, message, ct);
         public Task<Result> DeleteAsync(string keyAlias, CancellationToken ct) => Task.FromResult(Result.Success());
     }
 

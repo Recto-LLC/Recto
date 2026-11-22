@@ -116,41 +116,4 @@ public static class QrCanonicalJson
             ["_qr_meta"] = QrMetaToDict(payload.QrMeta),
         };
     }
-
-    /// <summary>
-    /// Convert a <see cref="MultiWitnessContract"/> record to the
-    /// dict shape that <see cref="CanonicalJson"/> expects. Mirrors
-    /// the Python MultiWitnessContract → dict conversion in
-    /// <c>recto.qr.multi_witness.encode_multi_witness_qr</c>.
-    /// </summary>
-    public static IReadOnlyDictionary<string, object?> MultiWitnessContractToDict(
-        MultiWitnessContract contract)
-    {
-        if (contract == null) throw new ArgumentNullException(nameof(contract));
-        var requiredList = new List<object?>();
-        foreach (var w in contract.RequiredWitnesses) requiredList.Add(w);
-
-        var witnessesList = new List<object?>();
-        foreach (var w in contract.Witnesses)
-        {
-            witnessesList.Add(new Dictionary<string, object?>
-            {
-                ["principal"] = w.Principal,
-                ["signature"] = w.Signature,
-                ["signed_at"] = w.SignedAt,
-            });
-        }
-
-        return new Dictionary<string, object?>
-        {
-            ["v"] = (long)contract.V,
-            ["kind"] = contract.Kind,
-            ["iss"] = contract.Iss,
-            ["subject"] = contract.Subject,
-            ["required_witnesses"] = requiredList,
-            ["witnesses"] = witnessesList,
-            ["completed_at"] = contract.CompletedAt,
-            ["_qr_meta"] = QrMetaToDict(contract.QrMeta),
-        };
-    }
 }

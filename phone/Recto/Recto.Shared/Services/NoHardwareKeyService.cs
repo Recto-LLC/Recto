@@ -39,6 +39,10 @@ public sealed class NoHardwareKeyService : IEnclaveKeyService
     public Task<Result<byte[]>> SignAsync(string keyAlias, byte[] message, CancellationToken ct)
         => Task.FromResult(Result.Failure<byte[]>(Refusal));
 
+    /// <summary>Said outright: refused by name like every other key act here, and no prompt exists to raise.</summary>
+    public Task<Result<byte[]>> SignWithDeviceKeyAsync(string keyAlias, byte[] message, CancellationToken ct)
+        => Task.FromResult(Result.Failure<byte[]>(Refusal));
+
     public Task<Result> DeleteAsync(string keyAlias, CancellationToken ct)
         => Task.FromResult(Result.Success());
 }

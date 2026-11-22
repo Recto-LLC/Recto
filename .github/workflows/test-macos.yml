@@ -69,10 +69,11 @@ jobs:
         #         real azure.core exception types; no live vault needed
         #         — the live arm is env-gated and skips in CI).
         # `qr` brings qrcode + Pillow (BSD / HPND, pure Python, no system
-        #         libraries). WITHOUT IT test_qr_encode and
-        #         test_qr_multi_witness skip AT COLLECTION -- the modules
-        #         never load, which is what "collected 1585 items /
-        #         2 skipped" was reporting.
+        #         libraries). WITHOUT IT test_qr_encode skips AT
+        #         COLLECTION -- the module never loads, which is what
+        #         "collected 1585 items / 2 skipped" was reporting (the
+        #         second was a multi-witness test module, since removed
+        #         with its code).
         #         THIS EXTRA HAD NO LINE IN THIS BLOCK AT ALL. Every other
         #         extra carries a reason, including the ones deliberately
         #         left out, so `qr` was an omission and not a decision --

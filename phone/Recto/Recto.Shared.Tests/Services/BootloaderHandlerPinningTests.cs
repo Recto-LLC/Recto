@@ -378,27 +378,388 @@ public class BootloaderHandlerPinningTests
         // SignAsync: the key handle, and the Signature of a direct signature.
         Assert.Contains("finally{if(!signerHandedOn){Release(signer);}Release(privateKey);}", compact);
         // SignAsync: the key store and its entry, after the method's own catch, so neither can change its answer.
-        var sign = compact.Substring(compact.IndexOf("SignAsync(stringkeyAlias,byte[]message,CancellationTokenct){", StringComparison.Ordinal));
+        var sign = compact.Substring(compact.IndexOf("Sign(stringkeyAlias,byte[]message,boolmayPrompt,CancellationTokenct){", StringComparison.Ordinal));
         sign = sign[..sign.IndexOf("publicTask<Result>DeleteAsync(", StringComparison.Ordinal)];
         Assert.DoesNotContain("usingvar", sign);
         Assert.EndsWith("{ex.Message}\")));}finally{Release(entry);Release(keyStore);}}", sign);
         // The key's authentication requirement: the answer is returned from the try, the releases follow.
         Assert.Contains(
-            "return(specasKeyInfo)?.IsUserAuthenticationRequired??true;}catch{returntrue;}finally{Release(spec);Release(factory);}",
+            "if(specisnotKeyInfoinfo){returnKeyGate.Unreadable;}"
+            + "returninfo.IsUserAuthenticationRequired?KeyGate.Gated:KeyGate.Open;}"
+            + "catch{returnKeyGate.Unreadable;}finally{Release(spec);Release(factory);}",
             compact);
-        // The prompt path: a prompt that could not be shown, then the prompt's two endings.
-        Assert.Contains("catch{Release(signer);throw;}", compact);
+        // The prompt path: a prompt that could not be started, then the prompt's two endings. Each releases the
+        // Signature and the objects made for the prompt - the prompt, its crypto object, its info and the builder.
+        Assert.Contains(
+            "catch(Exceptionex){if(callbackisnull){Release(signer);Release(flight);}else{callback.ReleaseAll();}"
+            + "returnResult.Failure<byte[]>(Error.Failure($\"Androidsignexception:{ex.GetType().Name}:{ex.Message}\"));}",
+            compact);
         Assert.Contains("newBiometricAuthCallback(tcs,message,signer)", compact);
-        Assert.Equal(2, Count(compact, "finally{ReleaseSigner();}"));
-        Assert.Contains("Release(Interlocked.Exchange(ref_signer,null));", compact);
+        // ONE outcome: every ending claims it first, and exactly one wins. The claim moves Live -> Ending, or
+        // takes over from a cancel (Cancelled -> Ending), which had answered the caller and left the release.
+        Assert.Contains("privateconstintLive=0;privateconstintCancelled=1;privateconstintEnding=2;privateint_state=Live;", compact);
+        Assert.Contains(
+            "privateint?Claim(){varwas=Interlocked.CompareExchange(ref_state,Ending,Live);if(was==Live){returnLive;}"
+            + "if(was==Cancelled&&Interlocked.CompareExchange(ref_state,Ending,Cancelled)==Cancelled){returnCancelled;}"
+            + "returnnull;}",
+            compact);
+        // Every ending of the prompt claims, then Finish: everything is released, the single-flight pass
+        // included, and only then is the caller answered. A cancel answers once, by its own claim.
+        Assert.Contains("privatevoidEnd(Result<byte[]>answer){if(Claim()isnull){return;}Finish(answer);}", compact);
+        Assert.Contains("privatevoidFinish(Result<byte[]>answer){ReleaseAll();_tcs.TrySetResult(answer);}", compact);
+        Assert.Contains(
+            "publicboolCancel(){if(Interlocked.CompareExchange(ref_state,Cancelled,Live)!=Live){returnfalse;}"
+            + "_tcs.TrySetResult(Result.Failure<byte[]>(Error.Failure(\"Operationcancelled.\")));returntrue;}",
+            compact);
+        Assert.Equal(2, Count(compact, "_tcs.TrySetResult("));
+        // Claim(): its declaration, End's, the success's, and the lapse's two (on the main thread, or at once
+        // when the main thread cannot be asked).
+        Assert.Equal(5, Count(compact, "Claim()"));
+        // Its declaration, the error ending and the abandon.
+        Assert.Equal(3, Count(compact, "End("));
+        // Finish: its declaration, End's, the success's two (a sign, or a release after a cancel), the lapse's two.
+        Assert.Equal(6, Count(compact, "Finish("));
+        Assert.DoesNotContain("finally{ReleaseAll();}", compact);
+        Assert.DoesNotContain("ReleaseSigner", compact);
+        foreach (var made in new[] { "flight", "cryptoObject", "builder", "promptInfo", "life" })
+        {
+            Assert.Equal(1, Count(compact, $"callback.Hold({made});"));
+        }
+        Assert.Equal(1, Count(compact, "callback.Show(prompt);"));
+        Assert.Contains("publicvoidShow(BiometricPromptprompt){_prompt=prompt;Hold(prompt);}", compact);
+        Assert.Contains(
+            "publicvoidReleaseAll(){Volatile.Write(ref_state,Ending);Release(Interlocked.Exchange(ref_signer,null));"
+            + "varheld=Interlocked.Exchange(ref_held,null);if(heldisnull){return;}_prompt=null;"
+            + "for(vari=held.Count-1;i>=0;i--){Release(held[i]);}}",
+            compact);
         // Every release goes through the one best-effort helper: a release that throws is dropped there.
         Assert.Contains("privatestaticvoidRelease(IDisposable?handle){try{handle?.Dispose();}catch{}}", compact);
-        Assert.Equal(1, Count(compact, "Dispose()"));
-        // Cancellation resolves the task and leaves the Signature with the prompt, which is still showing.
-        var cancel = compact.IndexOf("ct.Register(()=>tcs.TrySetResult(", StringComparison.Ordinal);
-        Assert.True(cancel > 0);
-        Assert.DoesNotContain("Dispose", compact.Substring(cancel, 160));
-        Assert.DoesNotContain("Release", compact.Substring(cancel, 160));
+        // Two in the file: the helper's, and the activity watch's own stop, which is released through the helper.
+        Assert.Equal(2, Count(compact, "Dispose()"));
+        Assert.Contains("publicvoidDispose()=>_application.UnregisterActivityLifecycleCallbacks(_watch);", compact);
+        // Cancellation answers the caller - when it wins the claim - and asks the prompt to close. It
+        // releases nothing itself: the Signature and the single-flight pass stay with the prompt until the
+        // prompt's own ending (or an abandon or a lapse), which takes the claim from it.
+        Assert.Contains(
+            "usingvarregistration=ct.Register(()=>{"
+            + "if(shown.Cancel()){RequestDismissal(on,shown);}});"
+            + "returnawaittcs.Task.ConfigureAwait(false);}",
+            compact);
+        var dismissal = compact.Substring(compact.IndexOf("privatestaticvoidRequestDismissal(", StringComparison.Ordinal));
+        dismissal = dismissal[..dismissal.IndexOf("privatestaticboolIsGone(", StringComparison.Ordinal)];
+        Assert.Equal(2, Count(dismissal, "activity.RunOnUiThread(callback.Dismiss);"));
+        Assert.DoesNotContain("Release", dismissal);
+        Assert.DoesNotContain("Dispose", dismissal);
+        // A dismissal that arrives after this prompt has ended does nothing, so it cannot close a later one.
+        Assert.Contains(
+            "publicvoidDismiss(){if(Volatile.Read(ref_held)isnull){return;}"
+            + "try{_prompt?.CancelAuthentication();}catch{}}",
+            compact);
+    }
+
+    [Fact]
+    public void AndroidKeyService_AdmitsOnePromptAtATime_AndRefusesTheSecondByName()
+    {
+        var compact = Compact(PhoneFile("Recto", "Platforms", "Android", "AndroidStrongBoxKeyService.cs"));
+        var sign = compact.Substring(compact.IndexOf("Sign(stringkeyAlias,byte[]message,boolmayPrompt,CancellationTokenct){", StringComparison.Ordinal));
+        sign = sign[..sign.IndexOf("publicTask<Result>DeleteAsync(", StringComparison.Ordinal)];
+
+        // One gate for the whole process.
+        Assert.Equal(1, Count(compact, "privatestaticreadonlySingleFlightPromptFlight=new();"));
+        Assert.Equal(1, Count(compact, "PromptFlight.TryEnter()"));
+        // The gated branch: the pass is taken, or the signing is refused by name, before the prompt flow is
+        // handed the Signature. It is the only way into the prompt flow.
+        Assert.Contains(
+            "varflight=PromptFlight.TryEnter();"
+            + "if(flightisnull){returnTask.FromResult(Result.Failure<byte[]>(Error.Conflict(PromptBusyMessage)));}"
+            + "signerHandedOn=true;"
+            + "returnAuthenticateAndSignAsync(signer,flight,message,keyAlias,ct);",
+            sign);
+        Assert.Equal(1, Count(compact, "AuthenticateAndSignAsync(signer,"));
+        // A refused second signing releases its own Signature: it was never handed on.
+        Assert.Contains("finally{if(!signerHandedOn){Release(signer);}Release(privateKey);}", sign);
+        // The pass is released on every ending. No prompt shown: at once. A prompt that failed to start, or
+        // one that ended: with everything else the callback holds, and it is the first thing held, so the
+        // last thing released.
+        Assert.Contains("if(!CanShowPrompt(activity)){Release(signer);Release(flight);", compact);
+        Assert.Contains("if(callbackisnull){Release(signer);Release(flight);}else{callback.ReleaseAll();}", compact);
+        Assert.Contains(
+            "callback=newBiometricAuthCallback(tcs,message,signer);callback.Hold(flight);"
+            + "varhost=newPromptHost<global::Android.App.Activity>(activity);varanswering=callback;"
+            + "callback.Hold(ActivityWatch.Start(host,answering));"
+            + "varprompt=newBiometricPrompt(activity,executor,callback);",
+            compact);
+        Assert.Equal(2, Count(compact, "Release(flight);"));
+        // The words name no key and no alias.
+        Assert.Contains(
+            "PromptBusyMessage=\"Anotherapprovaliswaitingforyourbiometric.Finishorcancelit,thentryagain.\";",
+            compact);
+    }
+
+    [Fact]
+    public void AndroidKeyService_ThePassIsTiedToTheActivity_SoALostEndingCannotHoldItForEver()
+    {
+        var compact = Compact(PhoneFile("Recto", "Platforms", "Android", "AndroidStrongBoxKeyService.cs"));
+
+        // The prompt library delivers an ending only while its fragment is started; an activity destroyed
+        // under a prompt drops it. Two ways back, both pinned.
+        // Both are asked of the prompt's host (PromptHost, tested on its own in PromptHostTests), which
+        // follows the activity across a rebuild: a configuration change destroys the activity the prompt was
+        // first shown on while the prompt lives, so nothing here reads that captured activity again.
+        // 1. The activity's own destruction - the host says whether it was for good - ends the signing, and
+        //    the next activity created is handed to the host.
+        Assert.Contains(
+            "publicvoidOnActivityDestroyed(global::Android.App.Activityactivity){"
+            + "if(_host.Destroyed(activity,activity.IsChangingConfigurations)){_callback.Abandon(PromptLostMessage);}}",
+            compact);
+        Assert.Contains(
+            "publicvoidOnActivityCreated(global::Android.App.Activityactivity,global::Android.OS.Bundle?savedInstanceState)"
+            + "=>_host.Created(activity);",
+            compact);
+        Assert.Contains("application.RegisterActivityLifecycleCallbacks(watch);returnnewStop(application,watch);", compact);
+        // 2. A later signing takes back a pass whose activity - the one the host watches now - is destroyed,
+        //    finishing or no longer current. The reads are the activity's own, and its "changing
+        //    configurations" comes first: Android sets it and marks the activity destroyed before the watch
+        //    hears of the destroy, and a signing asked in that window must not take a live prompt's pass.
+        Assert.Contains(
+            "privatestaticboolIsGone(PromptHost<global::Android.App.Activity>host){try{"
+            + "returnhost.IsGone(watched=>watched.IsChangingConfigurations,watched=>watched.IsDestroyed,"
+            + "watched=>watched.IsFinishing,()=>Microsoft.Maui.ApplicationModel.Platform.CurrentActivity);}"
+            + "catch{returntrue;}}",
+            compact);
+        Assert.DoesNotContain("shownOn", compact);
+        // Once in the destroy event, once in the reclaim's read.
+        Assert.Equal(2, Count(compact, "IsChangingConfigurations"));
+        // The pass can be taken back only once the prompt is asked: the watch is set on the line before. The
+        // prompt's whole life is capped (PromptLife, tested on its own): the LAPSE alone ends a prompt that
+        // ran out of time, answering in its own words and closing the prompt. The watch reads the life only
+        // as a late backstop, Grace past the limit, so a signing at the limit can never take the pass ahead
+        // of the queued lapse; and its abandon answers in the lapse's words once the limit is reached.
+        Assert.Contains(
+            "varlapseOn=activity;varlife=newPromptLife(()=>answering.Lapse(lapseOn));callback.Hold(life);"
+            + "flight.Watch(()=>life.IsOverBy(PromptLife.Grace)||IsGone(host),"
+            + "()=>answering.Abandon(life.WordsForAnEnding(PromptLostMessage)));"
+            + "prompt.Authenticate(promptInfo,cryptoObject);",
+            compact);
+        Assert.DoesNotContain("life.IsOver||", compact);
+        Assert.Equal(1, Count(compact, "flight.Watch("));
+        // A prompt past its life claims the outcome on the main thread, then is asked to close, then ended,
+        // answering the life's own words; when the main thread cannot be asked it is ended at once. A lapse
+        // that loses the claim does nothing.
+        Assert.Contains(
+            "publicvoidLapse(global::Android.App.Activityon){if(Volatile.Read(ref_state)==Ending){return;}"
+            + "varlapsed=Result.Failure<byte[]>(Error.Failure(PromptLife.LapsedMessage));"
+            + "try{on.RunOnUiThread(()=>{if(Claim()isnull){return;}Dismiss();Linger();Finish(lapsed);});}"
+            + "catch{if(Claim()isnull){return;}Linger();Finish(lapsed);}}",
+            compact);
+        // After a lapse the pass holds the flight the dismissal's delay longer, so the old prompt's own late
+        // ending lands on no one (SingleFlight.Pass.Linger, tested in PromptLifeTests). Only the lapse lingers.
+        Assert.Contains("privatevoidLinger()=>_pass?.Linger(DismissRetryDelay);", compact);
+        Assert.Equal(2, Count(compact, "Linger();"));
+        Assert.Contains("privatestaticreadonlyTimeSpanDismissRetryDelay=TimeSpan.FromMilliseconds(750);", compact);
+        Assert.Contains("if(madeisSingleFlight.Passpass){_pass=pass;}", compact);
+        // A success whose Signature is not this prompt's own - an older prompt's late ending - signs nothing.
+        Assert.Contains(
+            "varsig=result.CryptoObject?.Signature;varmine=Volatile.Read(ref_signer);"
+            + "if(sigisnull){answer=Result.Failure<byte[]>(Error.Failure(\"BiometricPromptCryptoObjectsignaturewasnull.\"));}"
+            + "elseif(mineisnull||!global::Android.Runtime.JNIEnv.IsSameObject(sig.Handle,mine.Handle))"
+            + "{answer=Result.Failure<byte[]>(Error.Failure(ForeignTouchMessage));}"
+            + "else{sig.Update(_message);",
+            compact);
+        Assert.Contains(
+            "privateconststringForeignTouchMessage=\"Thisapproval'stouchbelongedtoanotherprompt.Nothingwassigned.\";",
+            compact);
+        // The prompt says its limit.
+        Assert.Contains(
+            "builder.SetDescription($\"Yourfingerprintapprovesthiscryptographicoperation.Approvewithin{PromptLife.Limit.TotalMinutes:0}minutes.\");",
+            compact);
+        // An object handed to a callback that has already ended is released at once, never dropped.
+        Assert.Contains(
+            "publicvoidHold(IDisposable?made){if(madeisnull){return;}varheld=Volatile.Read(ref_held);"
+            + "if(heldisnull){Release(made);return;}held.Add(made);if(madeisSingleFlight.Passpass){_pass=pass;}}",
+            compact);
+        // A success claims first. One that loses - the caller was told nothing was signed - never touches the
+        // Signature; one that takes over from a cancel releases and signs nothing.
+        Assert.Contains(
+            "publicoverridevoidOnAuthenticationSucceeded(BiometricPrompt.AuthenticationResultresult){"
+            + "varclaimed=Claim();if(claimedisnull){return;}"
+            + "if(claimed==Cancelled){Finish(Result.Failure<byte[]>(Error.Failure(\"Operationcancelled.\")));return;}"
+            + "Result<byte[]>answer;",
+            compact);
+        // Either way the caller is answered with a failure, after everything is released; a prompt that has
+        // already ended is left alone.
+        Assert.Contains(
+            "publicvoidAbandon(stringwords){End(Result.Failure<byte[]>(Error.Failure(words)));}",
+            compact);
+        Assert.Contains(
+            "PromptLostMessage=\"Thebiometricpromptwasclosedbeforeitwasanswered.Nothingwassigned.Tryagain.\";",
+            compact);
+        // Nothing is signed on that path: Abandon reaches no Signature call.
+        var abandon = compact.Substring(compact.IndexOf("publicvoidAbandon(stringwords)", StringComparison.Ordinal));
+        abandon = abandon[..abandon.IndexOf("publicvoidHold(", StringComparison.Ordinal)];
+        Assert.DoesNotContain(".Sign(", abandon);
+        Assert.DoesNotContain("Result.Success", abandon);
+    }
+
+    [Fact]
+    public void IosKeyService_ADeviceKeySigning_IsMadeWithInteractionDisallowed()
+    {
+        var compact = Compact(PhoneFile("Recto", "Platforms", "iOS", "IosSecureEnclaveKeyService.cs"));
+        var device = compact.Substring(compact.IndexOf("SignWithDeviceKeyAsync(stringkeyAlias,", StringComparison.Ordinal));
+        device = device[..device.IndexOf("privateconstlongErrSecInteractionNotAllowed", StringComparison.Ordinal)];
+
+        // The key is loaded under a context that forbids interaction, so the enclave fails in place of asking.
+        Assert.Contains(
+            "usingvarnoPrompt=newLAContext{InteractionNotAllowed=true};"
+            + "usingvarprivateKey=LoadPrivateKey(keyAlias,noPrompt,outvarstatus);"
+            + "if(status==SecStatusCode.InteractionNotAllowed){"
+            + "returnTask.FromResult(Result.Failure<byte[]>(DeviceKeyRefusal.Locked()));}",
+            device);
+        Assert.Contains("if(contextisnotnull){query.AuthenticationContext=context;}", compact);
+        // "Interaction not allowed" means two things. When the key is LOADED it is the locked device, never a
+        // gated key. At signing, LocalAuthentication's "not interactive" is the gated key; the keychain's
+        // status is the gated key only while protected data is available, and the locked device otherwise.
+        Assert.Contains(
+            "returnTask.FromResult(Result.Failure<byte[]>(ReadInteractionFailure(error)switch{"
+            + "InteractionFailure.Gated=>DeviceKeyRefusal.Gated(),"
+            + "InteractionFailure.Locked=>DeviceKeyRefusal.Locked(),",
+            device);
+        Assert.Contains(
+            "if(code==LaErrorNotInteractive&&error.Domain==LaErrorDomain){returnInteractionFailure.Gated;}"
+            + "if(code==ErrSecInteractionNotAllowed){"
+            + "returnProtectedDataAvailable()?InteractionFailure.Gated:InteractionFailure.Locked;}",
+            compact);
+        // Protected data that cannot be read is "not available": the failure is then a locked device.
+        Assert.Contains(
+            "application.InvokeOnMainThread(()=>available=application.ProtectedDataAvailable);"
+            + "returnavailable;}catch{returnfalse;}",
+            compact);
+        Assert.Equal(1, Count(compact, "DeviceKeyRefusal.Gated()"));
+        Assert.Contains("ErrSecInteractionNotAllowed=-25308;", compact);
+        Assert.Contains("LaErrorNotInteractive=-1004;", compact);
+        // The entry that may prompt is unchanged: it loads the key under no context.
+        var prompting = compact.Substring(compact.IndexOf("publicTask<Result<byte[]>>SignAsync(", StringComparison.Ordinal));
+        prompting = prompting[..prompting.IndexOf("publicTask<Result<byte[]>>SignWithDeviceKeyAsync(", StringComparison.Ordinal)];
+        Assert.Contains("usingvarprivateKey=LoadPrivateKey(keyAlias);", prompting);
+        Assert.DoesNotContain("LAContext", prompting);
+    }
+
+    [Fact]
+    public void EveryKeyService_SaysForItself_HowItSignsWithADeviceKey()
+    {
+        // The interface's default refuses and never calls the signing that may prompt, so a key service
+        // that gates keys cannot prompt on the timer by leaving the method out.
+        var contract = Compact(PhoneFile("Recto.Shared", "Services", "IEnclaveKeyService.cs"));
+        Assert.Contains(
+            "Task<Result<byte[]>>SignWithDeviceKeyAsync(stringkeyAlias,byte[]message,CancellationTokenct)"
+            + "=>Task.FromResult(Result.Failure<byte[]>(DeviceKeyRefusal.NoEntry()));",
+            contract);
+        Assert.DoesNotContain("=>SignAsync(", contract);
+        // Each shipped key service has its own.
+        foreach (var file in new[]
+        {
+            new[] { "Recto", "Platforms", "Android", "AndroidStrongBoxKeyService.cs" },
+            new[] { "Recto", "Platforms", "iOS", "IosSecureEnclaveKeyService.cs" },
+            new[] { "Recto", "Services", "SoftwareEnclaveKeyService.cs" },
+            new[] { "Recto.Shared", "Services", "NoHardwareKeyService.cs" },
+        })
+        {
+            Assert.Equal(
+                1,
+                Count(Compact(PhoneFile(file)), "publicTask<Result<byte[]>>SignWithDeviceKeyAsync(stringkeyAlias,byte[]message,CancellationTokenct)"));
+        }
+        // No key service is left out: those four are every implementation in the app.
+        var implementations = new[] { PhonePath("Recto"), PhonePath("Recto.Shared") }
+            .SelectMany(root => Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories))
+            .Where(path => !path.Contains(Path.DirectorySeparatorChar + "obj" + Path.DirectorySeparatorChar)
+                && !path.Contains(Path.DirectorySeparatorChar + "bin" + Path.DirectorySeparatorChar))
+            .Count(path => Compact(File.ReadAllText(path)).Contains(":IEnclaveKeyService{", StringComparison.Ordinal));
+        Assert.Equal(4, implementations);
+    }
+
+    [Fact]
+    public void AndroidKeyService_ADeviceKeySigning_NeverReachesThePrompt()
+    {
+        var compact = Compact(PhoneFile("Recto", "Platforms", "Android", "AndroidStrongBoxKeyService.cs"));
+        var sign = compact.Substring(compact.IndexOf("Sign(stringkeyAlias,byte[]message,boolmayPrompt,CancellationTokenct){", StringComparison.Ordinal));
+        sign = sign[..sign.IndexOf("publicTask<Result>DeleteAsync(", StringComparison.Ordinal)];
+
+        // The two public entries differ in one word.
+        Assert.Contains(
+            "publicTask<Result<byte[]>>SignAsync(stringkeyAlias,byte[]message,CancellationTokenct)"
+            + "=>Sign(keyAlias,message,mayPrompt:true,ct);",
+            compact);
+        Assert.Contains(
+            "publicTask<Result<byte[]>>SignWithDeviceKeyAsync(stringkeyAlias,byte[]message,CancellationTokenct)"
+            + "=>Sign(keyAlias,message,mayPrompt:false,ct);",
+            compact);
+        // A key the keystore reports as gated is refused before the gate and before the prompt.
+        var direct = sign.IndexOf("vargate=ReadKeyGate(privateKey!);if(gate==KeyGate.Open){", StringComparison.Ordinal);
+        // Three answers from the keystore. Only "open" signs directly. Asked as a device key, "gated" is the
+        // named refusal and "unreadable" is an ordinary failure the read signer tries again - a passing
+        // keystore error is never reported as a gated key.
+        var refused = sign.IndexOf(
+            "if(!mayPrompt){returnTask.FromResult(Result.Failure<byte[]>(gate==KeyGate.Gated"
+            + "?DeviceKeyRefusal.Gated():Error.Failure(KeyGateUnreadableMessage)));}",
+            StringComparison.Ordinal);
+        Assert.Equal(1, Count(sign, "KeyGate.Open"));
+        Assert.Equal(1, Count(compact, "DeviceKeyRefusal.Gated()"));
+        var gate = sign.IndexOf("PromptFlight.TryEnter()", StringComparison.Ordinal);
+        var prompt = sign.IndexOf("AuthenticateAndSignAsync(", StringComparison.Ordinal);
+        Assert.True(direct > 0 && refused > direct && gate > refused && prompt > gate);
+        // The read signer signs through the device-key entry and no other.
+        var polls = Compact(PhoneFile("Recto.Shared", "Services", "PollSigning.cs"));
+        Assert.Contains("awaitenclave.SignWithDeviceKeyAsync(keyAlias,payload,ct)", polls);
+        Assert.DoesNotContain(".SignAsync(", polls);
+        Assert.DoesNotContain(".SignAsync(", Compact(PhoneFile("Recto.Shared", "Services", "IReadSigner.cs")));
+    }
+
+    [Fact]
+    public void AndroidKeyService_APromptThatCannotShow_IsAnsweredBeforeThePromptIsAsked()
+    {
+        var compact = Compact(PhoneFile("Recto", "Platforms", "Android", "AndroidStrongBoxKeyService.cs"));
+        var prompt = compact.Substring(compact.IndexOf("AuthenticateAndSignAsync(Signaturesigner,", StringComparison.Ordinal));
+        prompt = prompt[..prompt.IndexOf("privatesealedclassBiometricAuthCallback", StringComparison.Ordinal)];
+
+        // The library returns from authenticate without showing, and without calling back, for an activity that is
+        // finishing or destroyed or whose fragment manager has saved its state. Those are refused first, by name.
+        var refusal = prompt.IndexOf(
+            "if(!CanShowPrompt(activity)){Release(signer);Release(flight);"
+            + "returnResult.Failure<byte[]>(Error.Failure(PromptNotShownMessage));}",
+            StringComparison.Ordinal);
+        var asked = prompt.IndexOf("prompt.Authenticate(promptInfo,cryptoObject);", StringComparison.Ordinal);
+        Assert.True(refusal > 0);
+        Assert.True(asked > refusal);
+        Assert.Equal(1, Count(prompt, ".Authenticate("));
+        Assert.Contains(
+            "privatestaticboolCanShowPrompt(FragmentActivityactivity){try{"
+            + "if(activity.IsFinishing||activity.IsDestroyed){returnfalse;}"
+            + "varfragments=activity.SupportFragmentManager;"
+            + "returnfragmentsisnotnull&&!fragments.IsStateSaved;}catch{returnfalse;}}",
+            prompt);
+        // Nothing escapes as an exception: the method is awaited, so every ending is a result.
+        Assert.DoesNotContain("throw;", prompt);
+        Assert.Equal(2, Count(prompt, "returnResult.Failure<byte[]>("));
+        Assert.EndsWith("returnfalse;}}", prompt);
+        // The words the caller is given name no key, no alias and no platform type.
+        Assert.Contains(
+            "PromptNotShownMessage=\"ThebiometricpromptcouldnotbeshownbecauseRectoisnotonscreen.OpenRectoandtryagain.\";",
+            compact);
+    }
+
+    [Fact]
+    public void SharedAssembly_OpensItsInternalsToNoOtherAssembly()
+    {
+        var root = Path.GetDirectoryName(PhonePath("Recto.Shared", "Recto.Shared.csproj"))!;
+        foreach (var file in Directory.EnumerateFiles(root, "*.cs*", SearchOption.AllDirectories))
+        {
+            var relative = Path.GetRelativePath(root, file);
+            if (relative.StartsWith("obj", StringComparison.Ordinal) || relative.StartsWith("bin", StringComparison.Ordinal))
+            {
+                continue;
+            }
+            Assert.DoesNotContain("InternalsVisibleTo", File.ReadAllText(file));
+        }
     }
 
     // --- the pins' own reader ---
@@ -508,7 +869,9 @@ public class BootloaderHandlerPinningTests
         return n;
     }
 
-    private static string PhoneFile(params string[] parts)
+    private static string PhoneFile(params string[] parts) => File.ReadAllText(PhonePath(parts));
+
+    private static string PhonePath(params string[] parts)
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "Recto", "MauiProgram.cs")))
@@ -516,7 +879,7 @@ public class BootloaderHandlerPinningTests
             dir = dir.Parent;
         }
         Assert.NotNull(dir);
-        return File.ReadAllText(Path.Combine(dir!.FullName, Path.Combine(parts)));
+        return Path.Combine(dir!.FullName, Path.Combine(parts));
     }
 
     private static HttpMessageInvoker InvokerFor(RequestCountCollectionHandler handler, HttpMessageHandler inner)

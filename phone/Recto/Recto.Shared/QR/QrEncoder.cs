@@ -172,44 +172,6 @@ public static class QrEncoder
     }
 
     /// <summary>
-    /// Encode a <see cref="MultiWitnessContract"/> as a QR code image.
-    /// Sister of Python's
-    /// <c>recto.qr.multi_witness.encode_multi_witness_qr</c>.
-    /// Encodes regardless of signature completeness — partially-
-    /// signed contracts can be rendered + passed to the next witness.
-    /// </summary>
-    public static byte[] EncodeMultiWitness(
-        MultiWitnessContract contract,
-        string imageFormat = "png",
-        string errorCorrection = DefaultErrorCorrection,
-        int pixelsPerModule = DefaultPngPixelsPerModule,
-        int border = DefaultBorder)
-    {
-        if (contract == null) throw new ArgumentNullException(nameof(contract));
-
-        var dict = QrCanonicalJson.MultiWitnessContractToDict(contract);
-        var canonicalBytes = CanonicalJson.Encode(dict);
-        var canonicalString = Encoding.UTF8.GetString(canonicalBytes);
-
-        if (canonicalBytes.Length > QRCapacities.V40L)
-        {
-            throw new ArgumentException(
-                $"contract canonical-JSON encoding is {canonicalBytes.Length} " +
-                $"bytes, exceeds QR v40 capacity of {QRCapacities.V40L} bytes. " +
-                $"Multi-QR fragmentation reserved for v2; consider " +
-                $"splitting the contract into multiple smaller contracts.",
-                nameof(contract));
-        }
-
-        return EncodeText(
-            canonicalString,
-            imageFormat: imageFormat,
-            errorCorrection: errorCorrection,
-            pixelsPerModule: pixelsPerModule,
-            border: border);
-    }
-
-    /// <summary>
     /// Encode a PNG byte array as a base64-encoded data URI suitable
     /// for embedding in HTML <c>&lt;img src="..."&gt;</c> tags. Convenience
     /// helper for the Recto Phone Pairing-details [QR] button modal

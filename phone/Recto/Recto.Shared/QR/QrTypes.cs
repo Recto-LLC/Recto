@@ -48,7 +48,7 @@ public static class QRFormats
 }
 
 /// <summary>
-/// Schema version for v1 QRPayloadV1 / MultiWitnessContract. Bumped
+/// Schema version for v1 QRPayloadV1. Bumped
 /// only on breaking schema changes; additive field extensions stay
 /// at v1. Future v2 would land as sibling QRPayloadV2 record + version
 /// dispatch in encode/decode helpers.
@@ -133,53 +133,4 @@ public sealed record QRPayloadV1(
             Body: body,
             QrMeta: QRMeta.Default()
         );
-}
-
-/// <summary>
-/// One witness signature in a multi-witness contract. Each witness
-/// signs the canonical-JSON encoding of the contract's state AT THE
-/// TIME OF THEIR SIGNATURE (i.e. their entry is appended AFTER
-/// signing). The QR re-renders after each witness signs; consumers
-/// can verify the chain by replaying signatures in order.
-/// </summary>
-public sealed record Witness(
-    string Principal,
-    string Signature,
-    long SignedAt
-);
-
-/// <summary>
-/// Multi-signer contract that grows as witnesses sign. The originator
-/// signs a base claim with a <see cref="RequiredWitnesses"/> list;
-/// sends the QR around; each required witness adds their signature
-/// before re-rendering. The final QR (after all required witnesses
-/// have signed) IS the canonical contract document.
-/// <para>
-/// First concrete use cases: a consumer's first user-to-user citation
-/// receipt (a consumer architectural commitment), a first civic-office promotion
-/// certificate (chat-tier civic-office model), and a consumer-defined
-/// manumission ceremony.
-/// </para>
-/// </summary>
-public sealed record MultiWitnessContract(
-    int V,
-    string Kind,
-    string Iss,
-    IReadOnlyDictionary<string, object?> Subject,
-    IReadOnlyList<string> RequiredWitnesses,
-    IReadOnlyList<Witness> Witnesses,
-    long? CompletedAt,
-    QRMeta QrMeta
-)
-{
-    /// <summary>True when all required_witnesses have signed.</summary>
-    public bool IsComplete()
-    {
-        if (Witnesses.Count != RequiredWitnesses.Count) return false;
-        for (int i = 0; i < RequiredWitnesses.Count; i++)
-        {
-            if (Witnesses[i].Principal != RequiredWitnesses[i]) return false;
-        }
-        return true;
-    }
 }

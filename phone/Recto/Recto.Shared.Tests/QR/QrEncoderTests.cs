@@ -169,57 +169,6 @@ public class QrEncoderTests
     }
 
     // -----------------------------------------------------------------
-    // EncodeMultiWitness
-    // -----------------------------------------------------------------
-
-    [Fact]
-    public void EncodeMultiWitness_PartialContractEncodes()
-    {
-        // Sister of test_encodes_partial_contract.
-        // Partial-signed contracts render fine (passed between
-        // witnesses).
-        var contract = QrMultiWitness.CreateContract(
-            iss: "x",
-            subject: new Dictionary<string, object?> { ["id"] = "test" },
-            requiredWitnesses: new List<string> { "user:a", "user:b" });
-        contract = QrMultiWitness.AddWitnessSignature(
-            contract, "user:a", "sig-a", 100);
-        var pngBytes = QrEncoder.EncodeMultiWitness(contract);
-        Assert.True(StartsWithPngMagic(pngBytes));
-    }
-
-    [Fact]
-    public void EncodeMultiWitness_CompletedContractEncodes()
-    {
-        // Sister of test_encodes_completed_contract
-        var contract = QrMultiWitness.CreateContract(
-            iss: "x",
-            subject: new Dictionary<string, object?> { ["id"] = "test" },
-            requiredWitnesses: new List<string> { "user:a", "user:b" });
-        contract = QrMultiWitness.AddWitnessSignature(
-            contract, "user:a", "sig-a", 100);
-        contract = QrMultiWitness.AddWitnessSignature(
-            contract, "user:b", "sig-b", 200);
-        Assert.True(contract.IsComplete());
-        var pngBytes = QrEncoder.EncodeMultiWitness(contract);
-        Assert.True(StartsWithPngMagic(pngBytes));
-    }
-
-    [Fact]
-    public void EncodeMultiWitness_SvgOutput()
-    {
-        // Sister of test_svg_output
-        var contract = QrMultiWitness.CreateContract(
-            iss: "x",
-            subject: new Dictionary<string, object?>(),
-            requiredWitnesses: new List<string> { "user:a" });
-        var svgBytes = QrEncoder.EncodeMultiWitness(
-            contract, imageFormat: "svg");
-        var svgString = Encoding.UTF8.GetString(svgBytes);
-        Assert.True(svgString.Contains("<svg", StringComparison.OrdinalIgnoreCase));
-    }
-
-    // -----------------------------------------------------------------
     // PngBytesToDataUri (Recto Phone integration helper)
     // -----------------------------------------------------------------
 
