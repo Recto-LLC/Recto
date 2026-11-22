@@ -446,15 +446,20 @@ class TestTheActRoute:
         status, body = _http(f"{base}/v0.4/connections/act", {"jws": "x", "record": {}})
         assert (status, body["error"]) == (503, "operator_pubkey_not_configured")
 
-    def test_the_log_names_the_act_and_never_the_value(self, boot, caplog):
+    def test_the_log_names_the_outcome_and_never_what_the_card_asked(self, boot, caplog):
+        # Owner ruling 2026-11-22: Recto logs no part of what a service asked.
         caplog.set_level(logging.INFO, logger="recto.bootloader.connections")
         record = _record("delete", "alpha")
-        assert _act(boot, record, _mint(_claims(record), boot["priv"]))[0] == 200
+        claims = _claims(record)
+        assert _act(boot, record, _mint(claims, boot["priv"]))[0] == 200
         bad = _record("disable", "beta")
-        _act(boot, bad, _mint(_claims(bad, max_uses=None), boot["priv"]))
+        bad_claims = _claims(bad, max_uses=None)
+        _act(boot, bad, _mint(bad_claims, boot["priv"]))
         text = caplog.text
-        assert "connections act DONE" in text and "'delete'" in text and "'alpha'" in text
+        assert "connections act DONE" in text
         assert "connections act REFUSED not_single_use" in text
+        for asked in ("'delete'", "'disable'", "alpha", "beta", record.service, claims.jti, bad_claims.jti):
+            assert asked not in text, asked
         assert VALUE not in text
 
 

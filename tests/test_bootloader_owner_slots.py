@@ -940,7 +940,8 @@ def test_the_request_log_never_prints_a_pairing_code(ctx, capsys, query) -> None
     _http("GET", f"{ctx['base_url']}/v0.4/registration_challenge?" + query.format(c=good))
     out = capsys.readouterr().out
     assert good not in out, out
-    assert "=***" in out and "x=1" in out, out
+    # Names only: every value is masked (owner ruling 2026-11-22), so "x=1" shows as "x=***".
+    assert "=***" in out and "x=***" in out and "x=1" not in out, out
 
 
 def test_a_codeless_flood_never_evicts_a_phones_revoke_challenge(ctx) -> None:
@@ -1129,8 +1130,9 @@ def test_the_runner_reads_the_owner_mint_flag_strictly() -> None:
     from run_bootloader_consumer import _owner_code_minters
     assert _owner_code_minters([{"agent_id": "bridge", "may_mint_owner_codes": True}, {"agent_id": "svc"},
                                 {"agent_id": "other", "may_mint_owner_codes": False}]) == {"bridge"}
-    with pytest.raises(ValueError, match="'svc'"):
-        _owner_code_minters([{"agent_id": "svc", "may_mint_owner_codes": "true"}])
+    with pytest.raises(ValueError, match="agent entry 2: may_mint_owner_codes") as refused:
+        _owner_code_minters([{"agent_id": "ok"}, {"agent_id": "svc", "may_mint_owner_codes": "true"}])
+    assert "svc" not in str(refused.value)   # by position, never its agent (hard rule 15.ab)
 
 
 def test_the_example_flags_only_the_operators_own_agent() -> None:
@@ -2381,7 +2383,7 @@ def test_no_store_read_follows_the_startup_guard(tmp_path, monkeypatch, caplog) 
                                challenges=ChallengeStore(state=state), ssl_context=None)
     server.server_close()
     said = [r.getMessage() for r in caplog.records if r.name == "recto.bootloader.slots"]
-    assert said[:2] == ["owner genesis: open; owner-code minters: none",
+    assert said[:2] == ["owner genesis: open; owner-code minters: 0",
                         "owner genesis is OPEN: the next owner pairing code alone enrolls the first owner phone - pair "
                         "it now, over the operator's own route"], said
     _assert_store_lock_free(tmp_path)
@@ -2965,7 +2967,7 @@ def test_a_start_closes_genesis_left_open_beside_an_owner(tmp_path, caplog) -> N
             assert status == 403 and body.get("error") == "owner_approval_required", body
     repaired = [r.getMessage() for r in caplog.records if r.name == "recto.bootloader.slots"]
     assert "owner genesis was open beside an owner phone - closed" in repaired, repaired
-    assert "owner genesis: closed; owner-code minters: none" in repaired, repaired
+    assert "owner genesis: closed; owner-code minters: 0" in repaired, repaired
     assert not any("owner genesis is OPEN" in m for m in repaired), repaired
     rc, text = _cli("bootloader", "owner-slots", "--state-dir", str(tmp_path), "--expect", owner.ref)
     assert rc == 0 and "owner genesis: closed" in text, text

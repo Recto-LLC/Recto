@@ -212,9 +212,10 @@ class TestSetAtTheActRoute:
         seen = "\n".join([caplog.text, out.out, out.err, json.dumps(answers)])
         for secret in (NEW, WRONG, STORED, "fake-"):
             assert secret not in seen, f"a value leaked: {secret[:5]}..."
-        assert "connections act DONE" in caplog.text and "'set'" in caplog.text and "'alpha'" in caplog.text
-        assert f"sha256:{good.value_sha256[:12]}" in caplog.text, "the audit line names the value by its fingerprint"
-        assert good.value_sha256 not in caplog.text, "only the prefix the card shows"
+        assert "connections act DONE" in caplog.text
+        # Owner ruling 2026-11-22: the act's verb, key and fingerprint are what the card asked - never logged.
+        assert "'set'" not in caplog.text and "alpha" not in caplog.text
+        assert good.value_sha256[:12] not in caplog.text
         assert "connections act REFUSED value_fingerprint_mismatch" in caplog.text
 
 

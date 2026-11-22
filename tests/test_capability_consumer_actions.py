@@ -203,16 +203,16 @@ class TestAgentPolicyReader:
     )
     def test_malformed_refuses_by_name(self, bad: Any) -> None:
         """A malformed policy must never read as "no policy": that fails open."""
-        with pytest.raises(ValueError, match=r"agent 'a': requestable_audiences"):
+        with pytest.raises(ValueError, match=r"agent entry 1: requestable_audiences"):
             _parse_agent_policy_list(
-                "a", {"requestable_audiences": bad}, "requestable_audiences", "audience",
+                "agent entry 1", {"requestable_audiences": bad}, "requestable_audiences", "audience",
             )
 
     def test_the_action_reader_keeps_its_message(self) -> None:
         with pytest.raises(ValueError) as exc:
-            _parse_agent_policy_list("a", {"requestable_actions": []}, "requestable_actions", "action-key")
+            _parse_agent_policy_list("agent entry 1", {"requestable_actions": []}, "requestable_actions", "action-key")
         assert str(exc.value) == (
-            "agent 'a': requestable_actions must be a non-empty array of "
+            "agent entry 1: requestable_actions must be a non-empty array of "
             "action-key strings when present."
         )
 
@@ -250,7 +250,7 @@ class TestAgentPolicyReader:
             {"agent_id": "a", "token_env": "POLICY_TEST_TOKEN_A", "requestable_audiences": AUD_A},
         ])
         assert rc == 2 and kw is None
-        assert "agent 'a': requestable_audiences must be a non-empty array" in capsys.readouterr().err
+        assert "agent entry 1: requestable_audiences must be a non-empty array" in capsys.readouterr().err
 
     # THE AUTH-ONLY KIND (2026-10-17, hard rule 15.p): "capability_requests": false reaches the server as an auth-only
     # agent; a non-boolean, or a request policy beside it, stops startup by name.
@@ -280,7 +280,7 @@ class TestAgentPolicyReader:
             {"agent_id": "a", "token_env": "POLICY_TEST_TOKEN_A", "capability_requests": bad},
         ])
         assert rc == 2 and kw is None
-        assert "agent 'a': capability_requests must be true or false" in capsys.readouterr().err
+        assert "agent entry 1: capability_requests must be true or false" in capsys.readouterr().err
 
     def test_an_auth_only_agent_with_a_request_policy_stops_startup(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str],

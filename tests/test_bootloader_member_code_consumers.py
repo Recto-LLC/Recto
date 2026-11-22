@@ -194,7 +194,7 @@ def test_a_malformed_member_consumers_stops_startup(monkeypatch, tmp_path, capsy
         {"agent_id": "a", "token_env": "POLICY_TEST_TOKEN_A", "member_consumers": bad},
     ])
     assert rc == 2 and kw is None
-    assert "agent 'a': member_consumers must be" in capsys.readouterr().err
+    assert "agent entry 1: member_consumers must be" in capsys.readouterr().err
 
 
 def test_the_single_agent_twin_reaches_the_server(monkeypatch, tmp_path) -> None:

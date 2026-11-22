@@ -29,6 +29,15 @@ Event records carry:
                    deployments distinguish event sources)
 - ``payload``    — event-kind-specific dict; see EVENT_PAYLOAD_SHAPES below
 
+What an event never carries (owner ruling 2026-11-22): any part of what
+a service asked - a card's actions, purpose, tier, jti, audience, scope,
+claims, payload or its hash - nor who asked it (the agent's id, the
+consumer's address), nor the request's kind or a denial's free-text
+reason. Tracking what passes through Recto is the consuming platform's
+business; Recto, like an honest witness, does not log the services using
+it. ``emit`` enforces the declared shapes, so the bus cannot be widened
+by a caller.
+
 Security posture
 ================
 
@@ -91,54 +100,54 @@ from typing import Any
 
 
 # Event payload shapes documented here as the canonical schema.
-# Consumers reading the JSONL files can rely on these field names
-# being stable across Recto versions (additive-only changes;
-# removals require a minor version bump).
+#
+# WHAT AN EVENT MAY CARRY (owner ruling 2026-11-22): Recto records no
+# part of what a service asked and does not name the services using it.
+# Tracking what is sent through Recto and received from it is the
+# consuming platform's business, never the substrate's. So an event
+# carries only the event kind, its timestamps, the emitter's own
+# bootloader id and Recto's own opaque handles (the request_id it
+# minted, its own phone and key identifiers). The action(s), purpose,
+# tier, jti, audience, scope, claims, payload or payload hash of a card,
+# the requesting agent's id, the request's kind, a denial's free-text
+# reason and a consumer's address are never fields here.
+#
+# The schema is ENFORCED, not advisory: ``FileEventEmitter.emit`` writes
+# only the fields declared below for the event's kind and refuses any
+# kind not declared, so a caller cannot widen an event by passing more.
+# Consumers can rely on these names; a field is added only when it is
+# opaque in the sense above.
 EVENT_PAYLOAD_SHAPES: dict[str, dict[str, str]] = {
     "capability_approved": {
-        "request_id": "str (uuid)",
-        "agent_id": "str (the cap_agent_id that requested)",
-        "purpose": "str (the human-readable purpose claim from the JWS)",
-        "tier": "int (capability tier 0-3)",
-        "allow_actions": "list[str] (the cap.allow_actions[] claim)",
-        "jws_jti": "str (the assembled JWS's jti claim)",
+        "request_id": "str (uuid the bootloader minted at queue time)",
         "approved_at_unix": "int",
     },
     "capability_denied": {
         "request_id": "str (uuid)",
-        "agent_id": "str (the cap_agent_id that requested)",
-        "purpose": "str",
-        "tier": "int",
-        "reason": "str (denial reason from the phone-side response)",
         "denied_at_unix": "int",
     },
     "sign_approved": {
-        # Multi-coin sign kinds (eth_sign, btc_sign, ed_sign,
-        # tron_sign, single_sign, etc.). Approval kinds OTHER than
-        # capability_request resolve through the same notify path; we
-        # emit a generic sign_approved event so audit watchers see ALL
-        # operator approvals in one stream.
+        # Every approval kind OTHER than capability_request resolves
+        # through the same notify path and emits this one generic event,
+        # so a watcher sees every operator approval in one stream. The
+        # request's kind is not carried: it says what was asked.
         "request_id": "str (uuid)",
-        "kind": "str (the PendingRequest.kind value)",
         "approved_at_unix": "int",
     },
     "sign_denied": {
         "request_id": "str (uuid)",
-        "kind": "str",
-        "reason": "str",
         "denied_at_unix": "int",
     },
-    # v1 future emission sites — listed here for schema-stability
-    # guarantees; the emitter primitive supports them once the
-    # corresponding server.py call sites land.
+    # Reserved emission sites - listed for schema stability; the emitter
+    # writes them once the corresponding server.py call sites land.
     "phone_paired": {
-        "phone_id": "str (uuid)",
-        "public_key_b64u": "str (base64url, no padding)",
+        "phone_id": "str (the phone's registry handle)",
+        "public_key_b64u": "str (base64url, no padding; the phone's own key)",
         "algorithm": "str (ed25519 | ecdsa-p256)",
         "paired_at_unix": "int",
     },
     "phone_revoked": {
-        "phone_id": "str (uuid)",
+        "phone_id": "str (the phone's registry handle)",
         "revoked_at_unix": "int",
     },
     "vault_bootstrapped": {
@@ -146,16 +155,39 @@ EVENT_PAYLOAD_SHAPES: dict[str, dict[str, str]] = {
         "bootstrapped_at_unix": "int",
     },
     "capability_revoked": {
-        "jti": "str (the JWS jti claim that was revoked)",
-        "original_exp_unix": "int (the revoked JWS's exp)",
+        # The revoked grant's jti and exp are its claims - not carried.
         "revoked_at_unix": "int",
     },
     "devices_paired": {
-        "consumer_base_url": "str",
+        # The consumer's address names the service using Recto - not carried.
         "master_pubkey_hex": "str (128 hex chars)",
         "paired_at_unix": "int",
     },
 }
+
+# Names that would carry what a card asked, or name who asked. No shape
+# above may declare one; tests pin it, and emit() drops them regardless.
+FORBIDDEN_EVENT_FIELDS: frozenset[str] = frozenset({
+    "agent_id", "purpose", "tier", "allow_actions", "deny_actions", "groups",
+    "jti", "jws_jti", "aud", "audience", "scope", "claims", "cap", "payload",
+    "payload_hash", "payload_hash_b64u", "payload_sha256", "operation_description",
+    "service", "secret", "kind", "reason", "original_exp_unix", "exp", "consumer_base_url",
+})
+
+
+def shape_payload(kind: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    """The payload an event of ``kind`` may carry: the declared fields only.
+
+    ``None`` when ``kind`` is not declared - such an event is not written.
+    """
+    shape = EVENT_PAYLOAD_SHAPES.get(kind)
+    if shape is None:
+        return None
+    return {
+        name: payload[name]
+        for name in shape
+        if name in payload and name not in FORBIDDEN_EVENT_FIELDS
+    }
 
 
 class FileEventEmitter:
@@ -194,19 +226,26 @@ class FileEventEmitter:
     def emit(self, kind: str, payload: dict[str, Any]) -> None:
         """Append one event to today's JSONL file.
 
-        ``kind`` must match a key in ``EVENT_PAYLOAD_SHAPES`` for
-        stable downstream consumption, but the emitter doesn't
-        enforce this — unrecognized kinds are written through. The
-        schema doc is the contract; enforcement is a downstream-
-        consumer concern.
+        The schema is enforced here: only the fields
+        ``EVENT_PAYLOAD_SHAPES`` declares for ``kind`` are written, and a
+        kind it does not declare is not written at all. A caller cannot
+        make an event carry what a card asked by passing more.
         """
+        shaped = shape_payload(kind, payload)
+        if shaped is None:
+            print(
+                f"[recto.bootloader.events] WARNING: undeclared event kind "
+                f"{kind!r} not emitted",
+                file=sys.stderr,
+            )
+            return
         now = time.time()
         record = {
             "kind": kind,
             "ts": int(now),
             "ts_iso": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
             "bootloader": self.bootloader_id,
-            "payload": payload,
+            "payload": shaped,
         }
 
         # Daily-rotated file. Date in UTC to avoid timezone-shift
@@ -262,70 +301,30 @@ class FileEventEmitter:
         """Translate a notify_resolved_fn callback into a structured
         event JSONL append. Wire as
         ``create_server(notify_resolved_fn=emitter.notify_resolved, ...)``.
+
+        Only Recto's own opaque handle (the request_id) and the moment
+        cross into the event; nothing of what the card asked, nor who
+        asked it, is read from ``req`` (owner ruling 2026-11-22).
+        ``reason`` is not carried either: an operator's note or a
+        verifier's diagnostic can quote the card. The requesting agent
+        reads its verdict and reason from the result endpoint.
         """
         request_id = getattr(req, "request_id", "") or ""
-        kind = getattr(req, "kind", "") or ""
-
-        # Capability lifecycle gets its own dedicated event kind so
-        # downstream consumers can filter for capability events
-        # without parsing the generic sign_approved.
-        if kind == "capability_request":
+        now = int(time.time())
+        if (getattr(req, "kind", "") or "") == "capability_request":
             if ok:
-                # Pull richer metadata when available. The notify
-                # callback doesn't pass these directly, but req has
-                # them as attributes via the PendingRequest fields
-                # the bootloader stashed at queue time.
-                self.emit(
-                    "capability_approved",
-                    {
-                        "request_id": request_id,
-                        "agent_id": getattr(req, "cap_agent_id", "") or "",
-                        "purpose": getattr(req, "cap_purpose", "") or "",
-                        "tier": getattr(req, "cap_tier", 0) or 0,
-                        "allow_actions": list(
-                            getattr(req, "cap_allow_actions", ()) or ()
-                        ),
-                        "jws_jti": getattr(req, "cap_jti", "") or "",
-                        "approved_at_unix": int(time.time()),
-                    },
-                )
+                self.emit("capability_approved",
+                          {"request_id": request_id, "approved_at_unix": now})
             else:
-                self.emit(
-                    "capability_denied",
-                    {
-                        "request_id": request_id,
-                        "agent_id": getattr(req, "cap_agent_id", "") or "",
-                        "purpose": getattr(req, "cap_purpose", "") or "",
-                        "tier": getattr(req, "cap_tier", 0) or 0,
-                        "reason": reason or "",
-                        "denied_at_unix": int(time.time()),
-                    },
-                )
+                self.emit("capability_denied",
+                          {"request_id": request_id, "denied_at_unix": now})
             return
-
-        # All other sign kinds (eth_sign, btc_sign, ed_sign,
-        # tron_sign, single_sign, etc.) emit a generic sign_approved /
-        # sign_denied. Audit watchers that want to subscribe to every
-        # operator approval pick these up alongside capability_approved.
         if ok:
-            self.emit(
-                "sign_approved",
-                {
-                    "request_id": request_id,
-                    "kind": kind,
-                    "approved_at_unix": int(time.time()),
-                },
-            )
+            self.emit("sign_approved",
+                      {"request_id": request_id, "approved_at_unix": now})
         else:
-            self.emit(
-                "sign_denied",
-                {
-                    "request_id": request_id,
-                    "kind": kind,
-                    "reason": reason or "",
-                    "denied_at_unix": int(time.time()),
-                },
-            )
+            self.emit("sign_denied",
+                      {"request_id": request_id, "denied_at_unix": now})
 
 
 def construct_from_env(

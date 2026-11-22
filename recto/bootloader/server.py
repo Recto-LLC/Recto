@@ -36,6 +36,7 @@ import logging
 import os
 import re
 import secrets
+import sys
 import threading
 import time
 import types
@@ -244,6 +245,19 @@ def _constant_time_compare(a: str, b: str) -> bool:
     for x, y in zip(a.encode("utf-8"), b.encode("utf-8")):
         result |= x ^ y
     return result == 0
+
+
+# Running counts for the per-key ACL's log lines: the lines carry the outcome
+# and a count, never who read what (hard rule 15.ab). The counts are this
+# process's, from the module's import - the lines say "since import".
+_ACL_COUNTS: dict[str, int] = {"admitted": 0, "would_deny": 0, "denied": 0}
+_ACL_COUNTS_LOCK = threading.Lock()
+
+
+def _count_acl(outcome: str) -> int:
+    with _ACL_COUNTS_LOCK:
+        _ACL_COUNTS[outcome] += 1
+        return _ACL_COUNTS[outcome]
 
 
 def _connection_key_matches(pattern: str, key: str) -> bool:
@@ -649,13 +663,14 @@ class BootloaderConfig:
     # Enforcement switch for the allowlist above. TRUE BY DEFAULT (flipped
     # 2026-08-09): an unlisted key is refused with 403 key_not_allowed.
     #
-    # Set False to run the gate in AUDIT mode: every would-be denial is
-    # logged at WARNING with the agent, service and key, and the read still
-    # SUCCEEDS. That mode exists for a real reason -- it lets an operator
-    # discover the live key set from logs, including keys that are not
-    # statically enumerable in the consuming app (connection keys carried in
-    # DB-driven media-source configs, say) -- and it remains available. What
-    # changed is which way the switch points when nobody has touched it.
+    # Set False to run the gate in AUDIT mode: a read no allowlist admits
+    # still SUCCEEDS, and the log carries a COUNT only ("N reads would be
+    # denied under enforcement") - never the agent, the service or the key
+    # (hard rule 15.ab: Recto records nothing of what a service asks or which
+    # service asked). Discovering the live key set is therefore by the
+    # platform's own records of what it reads, not by Recto's logs.
+    # Production runs ENFORCE (RECTO_CONNECTIONS_KEY_ACL_ENFORCE=1, the
+    # default).
     #
     # Why it was flipped: audit was the DEFAULT, so a deployment that never
     # read this docstring served every unlisted secret and logged a warning
@@ -667,7 +682,7 @@ class BootloaderConfig:
     # The migration cost is real and is deliberately paid on the safe side:
     # an existing deployment that never set this flag and relies on unlisted
     # keys will start getting 403s. That is a loud, legible failure naming
-    # the exact key, which is recoverable in one config edit -- as against
+    # its refusal, which is recoverable in one config edit -- as against
     # the quiet failure it replaces, which was indistinguishable from working.
     # With the allowlist empty, default-deny means NOTHING is readable; the
     # startup posture log says so at WARNING rather than letting a fresh
@@ -1066,10 +1081,10 @@ class BootloaderHandler(BaseHTTPRequestHandler):
         try:
             url = urlparse(self.path)
             pairs = [kv for part in re.split(r"[&;]", url.query) for kv in parse_qsl(part, keep_blank_values=True)]
-            shown = "&".join(
-                f"{quote(name, safe='')}=" + ("***" if "code" in name.lower() else quote(value, safe=''))
-                for name, value in pairs
-            )
+            # Parameter names only: a value can be a pairing code or name
+            # what a service asked for (a key it reads) - Recto logs
+            # neither (owner ruling 2026-11-22).
+            shown = "&".join(f"{quote(name, safe='')}=***" for name, _value in pairs)
             print(f"[bootloader] GET {url.path}{'?' + shown if shown else ''}", flush=True)
             if url.path == "/v0.4/registration_challenge":
                 self._handle_registration_challenge(url)
@@ -1131,12 +1146,17 @@ class BootloaderHandler(BaseHTTPRequestHandler):
         except top_plane.TopPlaneRefused as e:
             self._send_json(HTTPStatus(e.status), {"error": e.name, "detail": e.detail})
         except BootloaderError as e:
-            print(f"[bootloader] BootloaderError on {url.path}: {e}", flush=True)
+            # The class only: a refusal's detail can quote the request's
+            # claims; the caller reads it in the answer, the log never does.
+            print(f"[bootloader] {type(e).__name__} on {url.path}", flush=True)
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": "bootloader_error", "detail": str(e)})
         except Exception as e:  # noqa: BLE001
             import traceback
-            print(f"[bootloader] EXCEPTION on {url.path}: {type(e).__name__}: {e}", flush=True)
-            traceback.print_exc()
+            # The class and the frames, never the message: an exception's
+            # text can carry the request's values.
+            # Both on stderr, the class line first, so a reader pairs them.
+            print(f"[bootloader] EXCEPTION on {url.path}: {type(e).__name__}", file=sys.stderr, flush=True)
+            traceback.print_tb(e.__traceback__, file=sys.stderr)
             self._send_json(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 {"error": "internal", "detail": type(e).__name__},
@@ -1245,12 +1265,17 @@ class BootloaderHandler(BaseHTTPRequestHandler):
         except top_plane.TopPlaneRefused as e:
             self._send_json(HTTPStatus(e.status), {"error": e.name, "detail": e.detail})
         except BootloaderError as e:
-            print(f"[bootloader] BootloaderError on {url.path}: {e}", flush=True)
+            # The class only: a refusal's detail can quote the request's
+            # claims; the caller reads it in the answer, the log never does.
+            print(f"[bootloader] {type(e).__name__} on {url.path}", flush=True)
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": "bootloader_error", "detail": str(e)})
         except Exception as e:  # noqa: BLE001
             import traceback
-            print(f"[bootloader] EXCEPTION on {url.path}: {type(e).__name__}: {e}", flush=True)
-            traceback.print_exc()
+            # The class and the frames, never the message: an exception's
+            # text can carry the request's values.
+            # Both on stderr, the class line first, so a reader pairs them.
+            print(f"[bootloader] EXCEPTION on {url.path}: {type(e).__name__}", file=sys.stderr, flush=True)
+            traceback.print_tb(e.__traceback__, file=sys.stderr)
             self._send_json(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 {"error": "internal", "detail": type(e).__name__},
@@ -2232,10 +2257,10 @@ class BootloaderHandler(BaseHTTPRequestHandler):
             phone = cfg.state.get_phone(req.phone_id)
             if phone is not None:
                 dispatcher.notify(phone, req.request_id)
-        except Exception:  # noqa: BLE001 - push must never break queueing
+        except Exception as exc:  # noqa: BLE001 - push must never break queueing
+            # The class only: a provider's response text is not Recto's record (hard rule 15.ab).
             logging.getLogger("recto.bootloader.push").warning(
-                "push notify failed for request %s", req.request_id,
-                exc_info=True,
+                "push notify failed for request %s (%s)", req.request_id, type(exc).__name__,
             )
 
     # ------------------------------------------------------------------
@@ -2547,8 +2572,9 @@ class BootloaderHandler(BaseHTTPRequestHandler):
             return False
         cfg.state.take_pending(req.request_id)
         logging.getLogger("recto.bootloader.pending").info(
-            "card withdrawn: authority expired request_id=%s phone_id=%s exp=%s",
-            req.request_id, req.phone_id, exp,
+            # Recto's own handles only: the card's exp is its claim (hard rule 15.ab).
+            "card withdrawn: authority expired request_id=%s phone_id=%s",
+            req.request_id, req.phone_id,
         )
         return True
 
@@ -4792,10 +4818,7 @@ class BootloaderHandler(BaseHTTPRequestHandler):
                 normalized_url + "/"
             )
         if webhook_token is None:
-            print(
-                f"[bootloader] devices/pair: unknown consumer_base_url={consumer_base_url!r}",
-                flush=True,
-            )
+            print("[bootloader] devices/pair: unknown consumer - refused", flush=True)
             self._send_json(
                 HTTPStatus.NOT_FOUND,
                 {
@@ -4880,10 +4903,7 @@ class BootloaderHandler(BaseHTTPRequestHandler):
             # Network-level failure (DNS, connection refused, TLS, etc.)
             # — the consumer's endpoint didn't respond at all. 502 maps
             # this cleanly: "got nothing useful from the upstream."
-            print(
-                f"[bootloader] devices/pair: URLError forwarding to {forward_url}: {e}",
-                flush=True,
-            )
+            print("[bootloader] devices/pair: the consumer is unreachable", flush=True)
             self._send_json(
                 HTTPStatus.BAD_GATEWAY,
                 {
@@ -4893,11 +4913,7 @@ class BootloaderHandler(BaseHTTPRequestHandler):
             )
             return
         except Exception as e:  # noqa: BLE001
-            print(
-                f"[bootloader] devices/pair: unexpected error forwarding to "
-                f"{forward_url}: {type(e).__name__}: {e}",
-                flush=True,
-            )
+            print(f"[bootloader] devices/pair: forwarding failed ({type(e).__name__})", flush=True)
             self._send_json(
                 HTTPStatus.BAD_GATEWAY,
                 {
@@ -4907,11 +4923,7 @@ class BootloaderHandler(BaseHTTPRequestHandler):
             )
             return
 
-        print(
-            f"[bootloader] devices/pair: relayed to {forward_url} "
-            f"(status={consumer_status})",
-            flush=True,
-        )
+        print(f"[bootloader] devices/pair: relayed (status={consumer_status})", flush=True)
 
         # Relay status + body. Use the same HTTPStatus mapping as the
         # consumer so callers can switch on the status verbatim.
@@ -5027,10 +5039,7 @@ class BootloaderHandler(BaseHTTPRequestHandler):
                 normalized_url + "/"
             )
         if webhook_token is None:
-            print(
-                f"[bootloader] devices/unpair: unknown consumer_base_url={consumer_base_url!r}",
-                flush=True,
-            )
+            print("[bootloader] devices/unpair: unknown consumer - refused", flush=True)
             self._send_json(
                 HTTPStatus.NOT_FOUND,
                 {
@@ -5085,10 +5094,7 @@ class BootloaderHandler(BaseHTTPRequestHandler):
             except (json.JSONDecodeError, Exception):
                 consumer_body = {"raw": str(e)}
         except urllib.error.URLError as e:
-            print(
-                f"[bootloader] devices/unpair: URLError forwarding to {forward_url}: {e}",
-                flush=True,
-            )
+            print("[bootloader] devices/unpair: the consumer is unreachable", flush=True)
             self._send_json(
                 HTTPStatus.BAD_GATEWAY,
                 {
@@ -5098,11 +5104,7 @@ class BootloaderHandler(BaseHTTPRequestHandler):
             )
             return
         except Exception as e:  # noqa: BLE001
-            print(
-                f"[bootloader] devices/unpair: unexpected error forwarding to "
-                f"{forward_url}: {type(e).__name__}: {e}",
-                flush=True,
-            )
+            print(f"[bootloader] devices/unpair: forwarding failed ({type(e).__name__})", flush=True)
             self._send_json(
                 HTTPStatus.BAD_GATEWAY,
                 {
@@ -5112,11 +5114,7 @@ class BootloaderHandler(BaseHTTPRequestHandler):
             )
             return
 
-        print(
-            f"[bootloader] devices/unpair: relayed to {forward_url} "
-            f"(status={consumer_status})",
-            flush=True,
-        )
+        print(f"[bootloader] devices/unpair: relayed (status={consumer_status})", flush=True)
 
         try:
             relayed_status = HTTPStatus(consumer_status)
@@ -6044,7 +6042,7 @@ class BootloaderHandler(BaseHTTPRequestHandler):
             code, exp = cfg.challenges.issue_member_pairing_code(
                 ttl_seconds=ttl_seconds, binding=(member_of["consumer"].strip(), subject))
             print(f"[bootloader] minted MEMBER pairing code via /v0.4/pairing/code "
-                  f"(agent={agent_id}, consumer={member_of['consumer']}, expires_at_unix={exp})", flush=True)
+                  f"(expires_at_unix={exp})", flush=True)
             self._send_json(HTTPStatus.OK, {"code": code, "expires_at_unix": exp, "ttl_seconds": ttl_seconds,
                                             "plane": "member"})
             return
@@ -6063,7 +6061,7 @@ class BootloaderHandler(BaseHTTPRequestHandler):
         # Operator-friendly stdout for the foreground-bootloader case
         # (matches the existing startup-print convention).
         print(f"[bootloader] minted pairing code via /v0.4/pairing/code "
-              f"(agent={agent_id}, expires_at_unix={exp})", flush=True)
+              f"(expires_at_unix={exp})", flush=True)
         self._send_json(HTTPStatus.OK, {
             "code": code,
             "expires_at_unix": exp,
@@ -7190,9 +7188,13 @@ class BootloaderHandler(BaseHTTPRequestHandler):
         Runs in one of two modes (config.connections_key_acl_enforce):
           - ENFORCE (the default): sends 403 key_not_allowed and returns
             False.
-          - AUDIT (an explicit opt-out): logs every would-be denial at
-            WARNING and returns True. Use it to discover the key set in use
-            before the gate can safely bite -- see the config docstring.
+          - AUDIT (an explicit opt-out): returns True and logs at WARNING
+            the COUNT of reads that would be denied under enforcement.
+
+        Every line names the outcome and a running count only - never the
+        agent, the key, the service or the pattern (hard rule 15.ab).
+        Discovering which keys a consumer reads is by the platform's own
+        records, not by Recto's logs; production runs ENFORCE.
 
         Default-deny: an agent absent from connections_agent_keys matches
         no pattern, so in ENFORCE mode it reads nothing. The caller has
@@ -7205,43 +7207,21 @@ class BootloaderHandler(BaseHTTPRequestHandler):
         logger = logging.getLogger("recto.bootloader.connections")
         for pattern in patterns:
             if _connection_key_matches(pattern, key):
-                # GATE 0b (2026-08-17). This line did not exist, and its
-                # absence was structural rather than cosmetic: an ADMITTED
-                # read produced NO EVIDENCE AT ALL, while an unadmitted one
-                # produced the WARNING below. So the audit trail could show
-                # what was MISSING from an allowlist and never what was
-                # UNUSED in one — and an allowlist that cannot show its own
-                # dead entries CAN ONLY EVER GROW. That is fatal to
-                # least-privilege, whose entire job is removal.
-                #
-                # It also made the rollout unverifiable: the plan was "add
-                # the measured key set, observe one window, then enforce" —
-                # but the moment a key is added its reads go SILENT, so the
-                # window reports nothing whether the set was right or wrong,
-                # and the only feedback left is breakage in production.
-                #
-                # INFO, not DEBUG: this has to survive a default logging
-                # configuration or it is not evidence.
-                logger.info(
-                    "connections key ACL: agent %r read secret %r in service %r "
-                    "(admitted by pattern %r)",
-                    agent_id, key, service, pattern,
-                )
+                # GATE 0b (2026-08-17): an ADMITTED read leaves evidence too,
+                # so a window of granted traffic never looks like an idle one.
+                # INFO, not DEBUG: it has to survive a default logging
+                # configuration. The outcome and its count only (15.ab).
+                logger.info("connections key ACL: ADMITTED (%d admitted reads since import)",
+                            _count_acl("admitted"))
                 return True
         if not cfg.connections_key_acl_enforce:
             logger.warning(
-                "connections key ACL (AUDIT, not enforcing): agent %r read "
-                "secret %r in service %r, which no allowlist pattern admits "
-                "(patterns=%r). Add it to connections_agent_keys before "
-                "enabling connections_key_acl_enforce.",
-                agent_id, key, service, patterns,
+                "connections key ACL (AUDIT, not enforcing): ALLOWED - %d reads would be "
+                "denied under enforcement since import",
+                _count_acl("would_deny"),
             )
             return True
-        logger.warning(
-            "connections key ACL DENIED: agent %r may not read secret %r in "
-            "service %r (patterns=%r).",
-            agent_id, key, service, patterns,
-        )
+        logger.warning("connections key ACL: DENIED (%d denied reads since import)", _count_acl("denied"))
         self._send_json(HTTPStatus.FORBIDDEN, {
             "error": "key_not_allowed",
             "detail": (
@@ -7507,11 +7487,9 @@ class BootloaderHandler(BaseHTTPRequestHandler):
         logger = logging.getLogger("recto.bootloader.connections")
 
         def refuse(status: HTTPStatus, error: str, detail: str, record: Any = None, jti: str | None = None) -> None:
-            logger.warning(
-                "connections act REFUSED %s: verb=%r service=%r key=%r jti=%r",
-                error, getattr(record, "verb", None), getattr(record, "service", None),
-                getattr(record, "key", None), jti,
-            )
+            # The refusal's name only: the act's verb, service, key and the
+            # grant's jti are what the card asked (owner ruling 2026-11-22).
+            logger.warning("connections act REFUSED %s", error)
             self._send_json(status, {"error": error, "detail": detail})
 
         try:
@@ -7575,11 +7553,7 @@ class BootloaderHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             refuse(HTTPStatus.BAD_REQUEST, "act_failed", str(exc), record, claims.jti)
             return
-        logger.info(
-            "connections act DONE: verb=%r service=%r key=%r jti=%r%s",
-            record.verb, record.service, record.key, claims.jti,
-            f" value={record.value_fingerprint()}..." if record.verb == "set" else "",
-        )
+        logger.info("connections act DONE")
         answer.update({"verb": record.verb, "jti": claims.jti})
         self._send_json(HTTPStatus.OK, answer)
 
@@ -9795,9 +9769,9 @@ def create_server(
         if not BootloaderHandler.config.connections_key_acl_enforce:
             _acl_log.warning(
                 "connections per-key ACL is in AUDIT mode: secret reads "
-                "outside an agent's allowlist are LOGGED BUT ALLOWED. Set "
-                "connections_key_acl_enforce=True once the logs show the "
-                "live key set."
+                "outside an agent's allowlist are ALLOWED and only counted. "
+                "Production runs connections_key_acl_enforce=True; the live key "
+                "set is read from the platform's own records."
             )
         elif not BootloaderHandler.config.connections_agent_keys:
             # The fresh-install shape, and the whole reason the enforcing
@@ -9810,15 +9784,15 @@ def create_server(
                 "connections per-key ACL is ENFORCING and connections_agent_keys "
                 "is EMPTY: every secret read will be refused with 403 "
                 "key_not_allowed. This is fail-closed, not a fault. Populate "
-                "connections_agent_keys, or set connections_key_acl_enforce=False "
-                "to run AUDIT mode and discover the live key set from the logs."
+                "connections_agent_keys from the platform's own records of the "
+                "keys it reads."
             )
         elif _wildcarded:
             _acl_log.warning(
-                "connections per-key ACL is enforcing, but these agents "
+                "connections per-key ACL is enforcing, but %d agent(s) "
                 "carry the '*' allow-all escape hatch and can read every "
-                "secret in their service: %s",
-                ", ".join(_wildcarded),
+                "secret in their service",
+                len(_wildcarded),
             )
     # Recto User Vault Substrate (2026-07-25). Empty/None user_vault_path
     # leaves all /v0.4/user-vault/* endpoints disabled (404). All four
@@ -9902,8 +9876,8 @@ def create_server(
     except BaseException:
         server.server_close()   # a refused start leaves no socket and no store lock behind
         raise
-    _slots_log.info("owner genesis: %s; owner-code minters: %s", decided,
-                    sorted(BootloaderHandler.config.owner_code_minters) or "none")
+    _slots_log.info("owner genesis: %s; owner-code minters: %d", decided,
+                    len(BootloaderHandler.config.owner_code_minters))
     if decided == "open":
         _slots_log.warning("owner genesis is OPEN: the next owner pairing code alone enrolls the first owner phone - "
                            "pair it now, over the operator's own route")

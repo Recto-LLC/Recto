@@ -1,9 +1,9 @@
-"""The launcher's startup lines name where each token was read from, never any of its characters.
+"""The launcher's startup lines carry counts: no token character, and no agent, consumer or vault entry name.
 
 The "Agents:" and "Devices-pair consumers:" lines go to the bootloader's stdout, which a host's log collection
-keeps. Each line names the agent (or the consumer) and its token's SOURCE - "env <NAME>", or
-"vault <service>/<secret>" when the token came from the dpapi-machine vault - and no part of the value appears
-anywhere in the launcher's output.
+keeps. Since the owner's ruling of 2026-11-22 (hard rule 15.ab) each is one line of counts - how many entries,
+how many tokens came from env and how many from the vault - and names no agent, no consumer's address and no
+env variable or vault entry; no part of any token's value appears anywhere in the launcher's output.
 """
 from __future__ import annotations
 
@@ -78,21 +78,20 @@ def test_each_agent_and_consumer_line_names_its_env_source_and_no_token_characte
                      [{"agent_id": "agent-one", "token_env": "START_LINE_TOKEN_A"},
                       {"agent_id": "agent-two", "token_env": "START_LINE_TOKEN_B", "may_mint_owner_codes": True}],
                      [{"base_url": "https://consumer.test/", "token_env": "START_LINE_WEBHOOK"}])
-    one = _line(out, "  - agent-one ")
-    two = _line(out, "  - agent-two ")
-    consumer = _line(out, "  - https://consumer.test ")
-    assert one.startswith("  - agent-one (token from env START_LINE_TOKEN_A) "), one
-    assert two.startswith("  - agent-two (token from env START_LINE_TOKEN_B) ") and "[mints owner codes]" in two, two
-    assert consumer == "  - https://consumer.test (token from env START_LINE_WEBHOOK)", consumer
-    # Not even a short run of a token's characters in its own line, and none anywhere in the output.
-    _assert_no_token_characters(one, (TOKEN_A,), 4)
-    _assert_no_token_characters(two, (TOKEN_B,), 4)
-    _assert_no_token_characters(consumer, (TOKEN_W,), 4)
+    agents = _line(out, "Agents:")
+    consumer = _line(out, "Devices-pair consumers:")
+    assert agents.startswith("Agents:        2 registered (tokens: 2 from env, 0 from vault;"), agents
+    assert "1 mint owner codes" in agents, agents
+    assert consumer == "Devices-pair consumers: 1 registered (tokens: 1 from env, 0 from vault)", consumer
+    for named in ("agent-one", "agent-two", "consumer.test", "START_LINE_TOKEN_A", "START_LINE_TOKEN_B",
+                  "START_LINE_WEBHOOK"):
+        assert named not in out, named
+    _assert_no_token_characters(agents + consumer, (TOKEN_A, TOKEN_B, TOKEN_W), 4)
     _assert_no_token_characters(out, (TOKEN_A, TOKEN_B, TOKEN_W), 6)
     assert "token =" not in out
 
 
-def test_a_token_read_from_the_vault_is_named_by_its_vault_entry(monkeypatch, tmp_path, capsys) -> None:
+def test_a_token_read_from_the_vault_is_counted_and_its_entry_not_named(monkeypatch, tmp_path, capsys) -> None:
     fetched: list[tuple[str, str]] = []
 
     class FakeVault:
@@ -114,16 +113,15 @@ def test_a_token_read_from_the_vault_is_named_by_its_vault_entry(monkeypatch, tm
     ])
     assert ("StartLineService", "START_LINE_SECRET") in fetched
     assert ("StartLineService", "RECTO_CAPABILITY_AGENT_TOKEN") in fetched
-    vault = _line(out, "  - vault-agent ")
-    default = _line(out, "  - default-secret-agent ")
-    assert vault.startswith("  - vault-agent (token from vault StartLineService/START_LINE_SECRET) "), vault
-    assert default.startswith(
-        "  - default-secret-agent (token from vault StartLineService/RECTO_CAPABILITY_AGENT_TOKEN) "), default
-    _assert_no_token_characters(vault + default, (TOKEN_V,), 4)
+    agents = _line(out, "Agents:")
+    assert agents.startswith("Agents:        2 registered (tokens: 0 from env, 2 from vault;"), agents
+    for named in ("vault-agent", "default-secret-agent", "StartLineService", "START_LINE_SECRET"):
+        assert named not in out, named
+    _assert_no_token_characters(agents, (TOKEN_V,), 4)
     _assert_no_token_characters(out, (TOKEN_V,), 6)
 
 
-def test_the_minimal_example_names_its_env_source_and_no_token_characters(monkeypatch, tmp_path, capsys) -> None:
+def test_the_minimal_example_counts_its_agent_and_prints_no_token_characters(monkeypatch, tmp_path, capsys) -> None:
     from tests.test_bootloader_owner_slots import _seed_state_dir, _wrap_real_create_server
     import run_bootloader_example as ex
 
@@ -141,7 +139,8 @@ def test_the_minimal_example_names_its_env_source_and_no_token_characters(monkey
         for server in made:
             server.server_close()
     out = captured.out + captured.err
-    assert _line(out, "Agents:") == "Agents:    myservice-agent (token from env MYSERVICE_AGENT_TOKEN)"
+    assert _line(out, "Agents:") == "Agents:    1 registered (token from env)"
+    assert "myservice-agent" not in out and "MYSERVICE_AGENT_TOKEN" not in out
     _assert_no_token_characters(out, (TOKEN_A,), 6)
 
 

@@ -324,10 +324,11 @@ class PushDispatcher:
         try:
             sender.send_wake(token, request_id=request_id)
         except Exception as exc:  # noqa: BLE001 - hard property 2
+            # The class only: a provider's response text is not Recto's record (hard rule 15.ab).
             logger.warning(
                 "push wake failed (platform=%s phone=%s request=%s): %s",
                 sender.platform,
                 phone_id,
                 request_id,
-                exc,
+                type(exc).__name__,
             )

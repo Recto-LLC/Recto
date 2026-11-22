@@ -106,3 +106,11 @@ pinned by a test; a finding that names one is answered by its letter.
 - **y.** Nothing from a card persists after the tap.
 - **z.** A grant request rings only the subject's bound phone.
 - **aa.** A revoke never needs the platform.
+- **ab.** Recto records nothing of what a service asks or which service asked:
+  no event, log line or banner carries a card's content, an agent's or
+  service's name, a connection key's name or a consumer's address. The
+  platform tracks what it sends to Recto and receives from it. Recto keeps
+  only its own records (poll verdicts, its own keys, enrollment, phone
+  revokes), never a service's. The connections key gate's audit mode follows
+  the same rule: it logs counts only, so the keys a service reads are known
+  from the platform's records, never Recto's.

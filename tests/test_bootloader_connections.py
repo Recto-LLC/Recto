@@ -830,10 +830,10 @@ class TestKeyAclAuditMode:
     and then assert that an unlisted key comes back with its value. That made
     it a green test PINNING a crossed boundary: the suite passed *because* the
     gate was off, and read as though that were the intended shipped state.
-    Audit mode is still a real, wanted capability -- it is how an operator
-    discovers which keys a running system actually reads, including keys no
-    static scan can enumerate. What it is not, and never should have been
-    described as, is the default.
+    Audit mode still exists, but since the owner's ruling of 2026-11-22
+    (hard rule 15.ab) it logs COUNTS only: discovery of the keys a consumer
+    reads is by the platform's own records, never Recto's logs, and
+    production runs ENFORCE.
     """
 
     def test_audit_mode_allows_and_warns(self, tmp_path, caplog):
@@ -855,10 +855,10 @@ class TestKeyAclAuditMode:
                 )
             assert status == 200
             assert body["value"] == "sk-live"
-            assert any(
-                "AUDIT" in r.getMessage() and "stripe" in r.getMessage()
-                for r in caplog.records
-            )
+            audit = [r.getMessage() for r in caplog.records if "AUDIT" in r.getMessage()]
+            assert any("would be denied under enforcement" in m for m in audit), audit
+            for named in ("stripe", "service-a-agent", "ServiceA", "anthropic"):
+                assert not any(named in m for m in audit), named
         finally:
             shutdown()
 
@@ -901,11 +901,11 @@ class TestKeyAclAuditMode:
             ]
             assert admitted, "an admitted read produced no evidence at all"
             msg = " ".join(admitted)
-            # agent, key AND service: an audit line missing any one of the
-            # three cannot answer "who read what, where".
-            assert "service-a-agent" in msg
-            assert "stripe" in msg
-            assert "ServiceA" in msg
+            # The outcome and a count, never who read what, where (15.ab).
+            assert "connections key ACL: ADMITTED" in msg
+            assert "service-a-agent" not in msg
+            assert "stripe" not in msg
+            assert "ServiceA" not in msg
         finally:
             shutdown()
 

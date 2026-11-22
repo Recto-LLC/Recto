@@ -453,11 +453,9 @@ def _resolve_token_for_agent(agent: dict) -> str:
         source = DpapiMachineSource(vault_service)
         material = source.fetch(vault_secret, {})
     except Exception as ex:
-        print(
-            f"WARN: vault fetch for {vault_service}/{vault_secret} failed: "
-            f"{type(ex).__name__}: {ex}",
-            file=sys.stderr,
-        )
+        # The failure's class only: the vault entry's names name the service
+        # whose token it holds (hard rule 15.ab).
+        print(f"WARN: a vault token fetch failed: {type(ex).__name__}", file=sys.stderr)
         return ""
     return (material.value or "").strip()
 
@@ -507,13 +505,14 @@ def _parse_connections_agent_services(
             if str(k).strip() and str(v).strip()
         }
     out: dict[str, str] = {}
-    for pair in raw.split(","):
+    # A bad entry is named by its position, never its text (hard rule 15.ab).
+    for position, pair in enumerate(raw.split(","), 1):
         pair = pair.strip()
         if not pair:
             continue
         if ":" not in pair:
             print(
-                f"ERROR: {var_name} entry {pair!r} is not "
+                f"ERROR: {var_name} entry {position} is not "
                 "'agent_id:service'.",
                 file=sys.stderr,
             )
@@ -559,7 +558,8 @@ def _parse_connections_agent_keys(
                 file=sys.stderr,
             )
             sys.exit(2)
-        for agent_id, value in obj.items():
+        # A bad entry is named by its position, never its agent (hard rule 15.ab).
+        for position, (agent_id, value) in enumerate(obj.items(), 1):
             agent_id = str(agent_id).strip()
             if not agent_id:
                 continue
@@ -569,7 +569,7 @@ def _parse_connections_agent_keys(
                 patterns = [str(v) for v in value]
             else:
                 print(
-                    f"ERROR: {var_name} entry for {agent_id!r} must be a "
+                    f"ERROR: {var_name} entry {position} must be a "
                     "string or a list of strings.",
                     file=sys.stderr,
                 )
@@ -578,13 +578,13 @@ def _parse_connections_agent_keys(
             if cleaned:
                 out[agent_id] = cleaned
         return out
-    for pair in raw.split(","):
+    for position, pair in enumerate(raw.split(","), 1):
         pair = pair.strip()
         if not pair:
             continue
         if ":" not in pair:
             print(
-                f"ERROR: {var_name} entry {pair!r} is not "
+                f"ERROR: {var_name} entry {position} is not "
                 "'agent_id:pattern|pattern'.",
                 file=sys.stderr,
             )
@@ -635,11 +635,7 @@ def _resolve_operator_write_token() -> str:
         source = DpapiMachineSource(vault_service)
         material = source.fetch(vault_secret, {})
     except Exception as ex:
-        print(
-            f"WARN: vault fetch for operator write token "
-            f"{vault_service}/{vault_secret} failed: {type(ex).__name__}: {ex}",
-            file=sys.stderr,
-        )
+        print(f"WARN: the operator write token's vault fetch failed: {type(ex).__name__}", file=sys.stderr)
         return ""
     return (material.value or "").strip()
 
@@ -1001,13 +997,14 @@ def _env_member_consumers() -> list[str] | None:
 
 def _owner_code_minters(agents: list[dict]) -> set[str]:
     """THE OWNER SLOTS: the agents whose entry carries "may_mint_owner_codes": true - a strict JSON boolean; any
-    other value is a config error naming the agent."""
+    other value is a config error naming the entry by its position, never its agent (hard rule 15.ab)."""
     minters: set[str] = set()
-    for agent in agents:
+    for position, agent in enumerate(agents, 1):
         agent_id = (agent.get("agent_id") or "").strip()
         may_mint = agent.get("may_mint_owner_codes", False)
         if not isinstance(may_mint, bool):
-            raise ValueError(f"agent {agent_id!r}: may_mint_owner_codes must be true or false; got {may_mint!r}")
+            raise ValueError(f"agent entry {position}: may_mint_owner_codes must be true or false; "
+                             f"got a {type(may_mint).__name__}")
         if may_mint:
             minters.add(agent_id)
     return minters
@@ -1167,11 +1164,9 @@ def _resolve_token_for_consumer(consumer: dict) -> str:
         source = DpapiMachineSource(vault_service)
         material = source.fetch(vault_secret, {})
     except Exception as ex:
-        print(
-            f"WARN: vault fetch for {vault_service}/{vault_secret} failed: "
-            f"{type(ex).__name__}: {ex}",
-            file=sys.stderr,
-        )
+        # The failure's class only: the vault entry's names name the service
+        # whose token it holds (hard rule 15.ab).
+        print(f"WARN: a vault token fetch failed: {type(ex).__name__}", file=sys.stderr)
         return ""
     return (material.value or "").strip()
 
@@ -1179,8 +1174,8 @@ def _resolve_token_for_consumer(consumer: dict) -> str:
 def _token_source(entry: dict, default_secret: str) -> str:
     """Where an agent's or a consumer's token was read from: the env variable's name or the vault entry's
     service/secret names - never any part of the value. The resolvers' own order: ``token_env`` when it names a
-    non-empty variable, else the dpapi-machine vault entry. The startup banner prints this beside each agent and
-    each devices-pair consumer, so no token's characters reach a log."""
+    non-empty variable, else the dpapi-machine vault entry. The startup banner counts these by kind (env or vault)
+    and prints none of them: an entry's names would name the service using Recto (hard rule 15.ab)."""
     token_env = (entry.get("token_env") or "").strip()
     if token_env and os.environ.get(token_env, "").strip():
         return f"env {token_env}"
@@ -1195,13 +1190,13 @@ def _token_source(entry: dict, default_secret: str) -> str:
 
 
 def _parse_agent_policy_list(
-    agent_id: str, agent: dict, field: str, noun: str,
+    entry: str, agent: dict, field: str, noun: str,
 ) -> list[str] | None:
     """Read one optional per-agent policy list from an agents.json entry.
 
     Absent = None (the agent is unrestricted at that layer). Present = a
     non-empty array of non-blank strings, returned stripped. Anything else
-    raises ``ValueError`` naming the agent and the field: an explicitly
+    raises ``ValueError`` naming the entry (its position, never its agent - 15.ab) and the field: an explicitly
     empty list is a config error, because an agent that may request
     nothing should not be registered, and a malformed one must never be
     read as "no policy" (that would fail OPEN).
@@ -1218,7 +1213,7 @@ def _parse_agent_policy_list(
         or not all(isinstance(a, str) and a.strip() for a in raw)
     ):
         raise ValueError(
-            f"agent {agent_id!r}: {field} must be a non-empty array of "
+            f"{entry}: {field} must be a non-empty array of "
             f"{noun} strings when present."
         )
     return [a.strip() for a in raw]
@@ -1338,7 +1333,7 @@ def main() -> int:
     agents = _resolve_agents()
 
     capability_agent_tokens: dict[str, str] = {}
-    # Where each agent's token was read from (env name or vault entry) - what the banner prints, never the value.
+    # Where each agent's token was read from (env or vault) - what the banner counts, never names or the value.
     capability_agent_token_sources: dict[str, str] = {}
     capability_agent_requestable: dict[str, list[str]] = {}
     capability_agent_audiences: dict[str, list[str]] = {}
@@ -1358,32 +1353,24 @@ def main() -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
-    for agent in agents:
+    # A bad entry is named by its position in the operator's own file, never by its agent id, token source or
+    # vault names (hard rule 15.ab): the operator finds it by position.
+    for position, agent in enumerate(agents, 1):
+        entry = f"agent entry {position}"
         agent_id = (agent.get("agent_id") or "").strip()
         if not agent_id:
-            print(
-                f"ERROR: agent entry missing agent_id: {agent!r}",
-                file=sys.stderr,
-            )
+            print(f"ERROR: {entry}: missing agent_id", file=sys.stderr)
             return 2
 
         agent_token = _resolve_token_for_agent(agent)
         if not agent_token:
-            token_env = (agent.get("token_env") or "").strip() or "(none declared)"
-            vault_service = (agent.get("vault_service") or "").strip() or "(unset)"
-            vault_secret = (
-                (agent.get("vault_secret") or "").strip()
-                or "RECTO_CAPABILITY_AGENT_TOKEN"
-            )
             print(
-                f"ERROR: agent {agent_id!r}: no token resolvable.\n"
-                f"Looked at:\n"
-                f"  - $env:{token_env} (unset or empty)\n"
-                f"  - dpapi-machine vault {vault_service}/{vault_secret} "
-                "(missing or unreadable)\n"
+                f"ERROR: {entry}: no token resolvable.\n"
+                "Looked at the entry's token_env (unset or empty) and its dpapi-machine vault entry\n"
+                "(vault_service / vault_secret, default secret RECTO_CAPABILITY_AGENT_TOKEN: missing or unreadable).\n"
                 "Provision via either:\n"
-                f"  (a) set $env:{token_env} directly (non-vault deployments), or\n"
-                f"  (b) `recto credman set {vault_service} {vault_secret}` "
+                "  (a) set the entry's token_env variable directly (non-vault deployments), or\n"
+                "  (b) `recto credman set <vault_service> <vault_secret>` with the entry's own names "
                 "(vault-backed deployments).",
                 file=sys.stderr,
             )
@@ -1391,7 +1378,7 @@ def main() -> int:
 
         if len(agent_token) != 64:
             print(
-                f"ERROR: agent {agent_id!r}: token must be 64 hex chars, "
+                f"ERROR: {entry}: token must be 64 hex chars, "
                 f"got {len(agent_token)}.",
                 file=sys.stderr,
             )
@@ -1399,7 +1386,7 @@ def main() -> int:
 
         if agent_id in capability_agent_tokens:
             print(
-                f"ERROR: duplicate agent_id {agent_id!r} in manifest.",
+                f"ERROR: {entry}: its agent_id repeats an earlier entry's.",
                 file=sys.stderr,
             )
             return 2
@@ -1422,13 +1409,13 @@ def main() -> int:
         #       cluster or executor -- the substrate carries none)
         try:
             requestable = _parse_agent_policy_list(
-                agent_id, agent, "requestable_actions", "action-key",
+                entry, agent, "requestable_actions", "action-key",
             )
             audiences = _parse_agent_policy_list(
-                agent_id, agent, "requestable_audiences", "audience",
+                entry, agent, "requestable_audiences", "audience",
             )
             member_consumers = _parse_agent_policy_list(
-                agent_id, agent, "member_consumers", "consumer base-URL",
+                entry, agent, "member_consumers", "consumer base-URL",
             )
         except ValueError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
@@ -1437,12 +1424,12 @@ def main() -> int:
         # agent that may raise no card at all; a request policy on such an agent contradicts it and is refused.
         capability_requests = agent.get("capability_requests", True)
         if not isinstance(capability_requests, bool):
-            print(f"ERROR: agent {agent_id!r}: capability_requests must be true or false; "
-                  f"got {capability_requests!r}", file=sys.stderr)
+            print(f"ERROR: {entry}: capability_requests must be true or false; "
+                  f"got a {type(capability_requests).__name__}", file=sys.stderr)
             return 2
         if not capability_requests:
             if requestable is not None or audiences is not None:
-                print(f"ERROR: agent {agent_id!r}: an auth-only agent (capability_requests: false) carries no "
+                print(f"ERROR: {entry}: an auth-only agent (capability_requests: false) carries no "
                       "requestable_actions or requestable_audiences", file=sys.stderr)
                 return 2
             capability_agent_auth_only.add(agent_id)
@@ -1463,36 +1450,27 @@ def main() -> int:
     # broker end-user pairing for any consumer).
     consumers = _resolve_consumers()
     devices_pair_consumer_webhook_tokens: dict[str, str] = {}
-    # Where each consumer's webhook token was read from - what the banner prints, never the value.
+    # Where each consumer's webhook token was read from - what the banner counts, never names or the value.
     devices_pair_consumer_token_sources: dict[str, str] = {}
     devices_pair_consumer_relay_urls: dict[str, str] = {}
 
-    for consumer in consumers:
+    # A bad consumer entry is named by its position, never its URL or token names (hard rule 15.ab).
+    for position, consumer in enumerate(consumers, 1):
+        centry = f"consumer entry {position}"
         base_url = (consumer.get("base_url") or "").strip()
         if not base_url:
-            print(
-                f"ERROR: consumer entry missing base_url: {consumer!r}",
-                file=sys.stderr,
-            )
+            print(f"ERROR: {centry}: missing base_url", file=sys.stderr)
             return 2
 
         webhook_token = _resolve_token_for_consumer(consumer)
         if not webhook_token:
-            token_env = (consumer.get("token_env") or "").strip() or "(none declared)"
-            vault_service = (consumer.get("vault_service") or "").strip() or "(unset)"
-            vault_secret = (
-                (consumer.get("vault_secret") or "").strip()
-                or "OPENCLAW_WEBHOOK_SECRET"
-            )
             print(
-                f"ERROR: consumer {base_url!r}: no webhook token resolvable.\n"
-                f"Looked at:\n"
-                f"  - $env:{token_env} (unset or empty)\n"
-                f"  - dpapi-machine vault {vault_service}/{vault_secret} "
-                "(missing or unreadable)\n"
+                f"ERROR: {centry}: no webhook token resolvable.\n"
+                "Looked at the entry's token_env (unset or empty) and its dpapi-machine vault entry\n"
+                "(vault_service / vault_secret, default secret OPENCLAW_WEBHOOK_SECRET: missing or unreadable).\n"
                 "Provision via either:\n"
-                f"  (a) set $env:{token_env} directly (non-vault deployments), or\n"
-                f"  (b) ensure the consumer's vault carries the named secret\n"
+                "  (a) set the entry's token_env variable directly (non-vault deployments), or\n"
+                "  (b) ensure the consumer's vault carries the entry's named secret\n"
                 "      (typical pattern: reuse the consumer's existing\n"
                 "      Agentic Harness webhook secret).",
                 file=sys.stderr,
@@ -1506,8 +1484,7 @@ def main() -> int:
         normalized_url = base_url.rstrip("/")
         if normalized_url in devices_pair_consumer_webhook_tokens:
             print(
-                f"ERROR: duplicate consumer base_url {normalized_url!r} "
-                "in manifest.",
+                f"ERROR: {centry}: its base_url repeats an earlier entry's.",
                 file=sys.stderr,
             )
             return 2
@@ -1544,7 +1521,8 @@ def main() -> int:
     # after the service map has answered "whose keys?". Unset means no
     # agent is allowlisted for anything: the gate ENFORCES by default, so
     # that is a hard default-deny; RECTO_CONNECTIONS_KEY_ACL_ENFORCE=0 is
-    # the explicit audit opt-out for discovering the live key set.
+    # the explicit audit opt-out (it logs counts only - discovery of the live
+    # key set is by the platform's own records; production runs ENFORCE).
     connections_agent_keys = _parse_connections_agent_keys(
         os.environ.get("RECTO_CONNECTIONS_AGENT_KEYS", "")
     )
@@ -1740,33 +1718,24 @@ def main() -> int:
                 "could not initialize -- events NOT emitted)"
             )
 
-    # Iterate registered agents -- ensures the banner stays accurate
-    # across both single-agent (env-var path) and multi-agent
-    # (RECTO_AGENTS_FILE manifest path) modes. One line per agent
-    # with its AppContext (or "no AppContext" annotation) so the
-    # operator can spot misconfigurations at glance.
+    # Registered agents, as COUNTS (hard rule 15.ab): the banner goes to stdout,
+    # which a host's log collection keeps, so it names no agent, no app, no
+    # action, audience or consumer - only how many entries carry each setting,
+    # and where the tokens were read from (env or vault, counted).
     if capability_agent_tokens:
-        print("Agents:")
-        for aid in capability_agent_tokens:
-            ctx = principal_apps.get(aid)
-            if ctx is not None:
-                ctx_str = f"AppContext={ctx.app_name} ({ctx.app_id})"
-            else:
-                ctx_str = "no AppContext (phone shows 'Unknown app' warning)"
-            policy = capability_agent_requestable.get(aid)
-            if policy is not None:
-                ctx_str += f" [requestable: {', '.join(policy)}]"
-            if aid in capability_agent_auth_only:
-                ctx_str += " [auth-only: raises no capability card]"
-            aud_policy = capability_agent_audiences.get(aid)
-            if aud_policy is not None:
-                ctx_str += f" [audiences: {', '.join(aud_policy)}]"
-            if aid in owner_code_minters:
-                ctx_str += " [mints owner codes]"
-            members_for = member_code_consumers.get(aid)
-            if members_for is not None:
-                ctx_str += f" [mints member codes for: {', '.join(members_for)}]"
-            print(f"  - {aid} (token from {capability_agent_token_sources[aid]}) {ctx_str}")
+        _sources = list(capability_agent_token_sources.values())
+        _from_env = sum(1 for src in _sources if str(src).startswith("env "))
+        _no_ctx = sum(1 for aid in capability_agent_tokens if principal_apps.get(aid) is None)
+        print(
+            f"Agents:        {len(capability_agent_tokens)} registered "
+            f"(tokens: {_from_env} from env, {len(_sources) - _from_env} from vault; "
+            f"{_no_ctx} without AppContext; "
+            f"{sum(1 for aid in capability_agent_tokens if aid in capability_agent_requestable)} with a requestable policy; "
+            f"{sum(1 for aid in capability_agent_tokens if aid in capability_agent_audiences)} with an audience policy; "
+            f"{sum(1 for aid in capability_agent_tokens if aid in capability_agent_auth_only)} auth-only; "
+            f"{sum(1 for aid in capability_agent_tokens if aid in owner_code_minters)} mint owner codes; "
+            f"{sum(1 for aid in capability_agent_tokens if aid in member_code_consumers)} mint member codes)"
+        )
     if not owner_code_minters:
         print(
             "WARNING: no agent may mint OWNER pairing codes (no entry carries \"may_mint_owner_codes\": true, nor "
@@ -1780,9 +1749,13 @@ def main() -> int:
     # misconfigurations at glance. Empty registry => one-line note
     # that the relay endpoint is disabled.
     if devices_pair_consumer_webhook_tokens:
-        print("Devices-pair consumers:")
-        for url in devices_pair_consumer_webhook_tokens:
-            print(f"  - {url} (token from {devices_pair_consumer_token_sources[url]})")
+        # A count only: a consumer's address names a service using Recto (15.ab).
+        _csrc = list(devices_pair_consumer_token_sources.values())
+        _cenv = sum(1 for src in _csrc if str(src).startswith("env "))
+        print(
+            f"Devices-pair consumers: {len(devices_pair_consumer_webhook_tokens)} registered "
+            f"(tokens: {_cenv} from env, {len(_csrc) - _cenv} from vault)"
+        )
     else:
         print(
             "Devices-pair consumers: (none registered -- "
@@ -1796,8 +1769,9 @@ def main() -> int:
     if connections_path:
         print(f"Connections:   {connections_path}")
         if connections_agent_services:
-            for aid, svc in connections_agent_services.items():
-                print(f"  - read scope: {aid} -> {svc}")
+            # Counts only: an agent and its service name who uses Recto (15.ab).
+            print(f"  - read scope: {len(connections_agent_services)} agent(s) mapped to "
+                  f"{len(set(connections_agent_services.values()))} service(s)")
         else:
             print("  - (no agent->service mappings -- reads 403 for every agent)")
         # Per-key ACL posture (2026-07-28) -- printed right under the read
@@ -1806,11 +1780,14 @@ def main() -> int:
         acl_mode = "ENFORCING" if connections_key_acl_enforce else "audit-only"
         print(f"  - key ACL: {acl_mode}")
         if connections_agent_keys:
-            for aid, patterns in connections_agent_keys.items():
-                note = " (ALLOW-ALL)" if any(
-                    p.strip() == "*" for p in patterns
-                ) else ""
-                print(f"    - {aid}: {', '.join(patterns)}{note}")
+            # Counts only: a key pattern names what a service reads (15.ab).
+            _allow_all = sum(
+                1 for patterns in connections_agent_keys.values()
+                if any(p.strip() == "*" for p in patterns)
+            )
+            print(f"    - {len(connections_agent_keys)} agent allowlist(s), "
+                  f"{sum(len(v) for v in connections_agent_keys.values())} pattern(s), "
+                  f"{_allow_all} ALLOW-ALL")
         elif connections_key_acl_enforce:
             print(
                 "    - (no allowlists -- every secret read 403s; set "
@@ -1818,8 +1795,9 @@ def main() -> int:
             )
         else:
             print(
-                "    - (no allowlists -- denials are logged, not blocked; "
-                "read the log, then set RECTO_CONNECTIONS_AGENT_KEYS)"
+                "    - (no allowlists -- reads that would be denied are counted, "
+                "not blocked; set RECTO_CONNECTIONS_AGENT_KEYS from the platform's "
+                "own records of the keys it reads)"
             )
         write_state = (
             "enabled" if operator_write_token else "DISABLED (no operator write token)"
@@ -1874,7 +1852,7 @@ def main() -> int:
             )
         elif owner_code_minters:
             print(
-                f"Mint codes on demand via POST /v0.4/pairing/code: OWNER codes by {', '.join(sorted(owner_code_minters))}; "
+                f"Mint codes on demand via POST /v0.4/pairing/code: OWNER codes by {len(owner_code_minters)} flagged agent(s); "
                 "an agent mints MEMBER codes by sending member_of, only for a consumer its member_consumers names."
             )
         else:

@@ -30,6 +30,11 @@ Pinned elsewhere, named here so the map is whole:
   15.q the relay log carries the status only:
        test_bootloader_devices_pair.py::TestRule15PairRecordCarriesAHandle
        ::test_the_relay_log_carries_the_status_only
+  15.ab no event, log line or banner names a service or what it asked:
+       test_bootloader_events.py (the event schema cannot carry a card),
+       test_no_service_names_in_logs.py (the ACL, the pairing relay, code minting),
+       test_bootloader_start_line_token_source.py (the startup banner counts),
+       and this file's catch-all source scan (test_15ab_...)
 """
 from __future__ import annotations
 
@@ -942,3 +947,59 @@ class TestRule15aaARevokeNeverNeedsThePlatform:
         assert card["kind"] == "user_vault_revoke" and card["context"]["user_vault_grant"]["grant_id"] == gid
         assert _revoke(uv_ctx, a, s, gid)[0] == 200
         assert _status(uv_ctx, s, body["request_id"])[1]["status"] == "revoked"
+
+
+# --------------------------------------------------------------------------
+# 15.ab - no event, log line or banner names a service or what it asked.
+# The catch-all source scan, sister of 15.o's: every print / log / emit call in
+# the bootloader and its shipped launchers is read as code (ast, so a call split
+# over lines is read whole), and none may interpolate a name that carries a
+# service's identity or what its card asked.
+# --------------------------------------------------------------------------
+
+import ast as _ast  # noqa: E402
+
+_REPO = Path(__file__).resolve().parents[1]
+_RULE_15AB_NAMES = frozenset({"agent_id", "cap_agent_id", "consumer_base_url", "forward_url", "purpose",
+                              "allow_actions", "jti"})
+_RULE_15AB_ATTRS = frozenset({"service", "key", "cap_agent_id", "purpose", "allow_actions", "jti"})
+_RULE_15AB_SINKS = frozenset({"debug", "info", "warning", "error", "exception", "critical", "log", "emit"})
+
+
+def _rule_15ab_offenders(source: str, label: str) -> list[str]:
+    found = []
+    for node in _ast.walk(_ast.parse(source)):
+        if not isinstance(node, _ast.Call):
+            continue
+        fn = node.func
+        if not ((isinstance(fn, _ast.Name) and fn.id == "print")
+                or (isinstance(fn, _ast.Attribute) and fn.attr in _RULE_15AB_SINKS)):
+            continue
+        for arg in [*node.args, *(k.value for k in node.keywords)]:
+            for sub in _ast.walk(arg):
+                if ((isinstance(sub, _ast.Name) and sub.id in _RULE_15AB_NAMES)
+                        or (isinstance(sub, _ast.Attribute) and sub.attr in _RULE_15AB_ATTRS)):
+                    found.append(f"{label}:{node.lineno}: {_ast.unparse(sub)}")
+    return found
+
+
+def test_15ab_no_bootloader_or_launcher_log_line_interpolates_a_service_or_its_ask() -> None:
+    files = sorted((_REPO / "recto" / "bootloader").glob("*.py"))
+    files += sorted((_REPO / "examples").glob("run_bootloader_*.py"))
+    assert len(files) > 5, files   # the scan saw the tree, not nothing
+    offenders = []
+    for path in files:
+        offenders += _rule_15ab_offenders(path.read_text(encoding="utf-8"), str(path.relative_to(_REPO)))
+    assert offenders == [], offenders
+
+
+@pytest.mark.parametrize("line", [
+    'print(f"agent={agent_id}")',
+    'logger.info("read %r", record.key)',
+    'log.warning(\n    "act %s",\n    claims.jti,\n)',
+    'self.emit("x", {"p": req.cap_agent_id})',
+    'print("to", forward_url)',
+    'logging.getLogger("x").error("svc %s", rec.service)',
+])
+def test_15ab_the_scan_catches_each_shape(line: str) -> None:
+    assert _rule_15ab_offenders(line, "probe"), line

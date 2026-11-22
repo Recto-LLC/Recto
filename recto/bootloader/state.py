@@ -652,8 +652,9 @@ class PendingRequest:
     # signature; the agent then fetches the assembled JWS via the
     # result endpoint. ``cap_agent_id`` carries the requesting agent's
     # logical identifier (the ``X-Recto-Agent-Id`` header value from
-    # the queue request) so audit logs can attribute requests to the
-    # right principal even when multiple agents share one phone. See
+    # the queue request) so the card can name its app (principal_apps)
+    # even when multiple agents share one phone. It is never written to
+    # an event or a log (owner ruling 2026-11-22). See
     # ``docs/v0.4-protocol.md`` "Capability-request flow (v0.6+)".
     cap_header_b64: str | None = None
     cap_payload_b64: str | None = None
