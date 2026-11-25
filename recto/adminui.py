@@ -2,9 +2,16 @@
 
 Bound by default to ``127.0.0.1:5050``. Operators expose externally
 via Cloudflare Tunnel + Cloudflare Access (or Caddy + basic auth, or
-nginx + mTLS, or any reverse-proxy gating they bring). Recto itself
-trusts every connection that reaches it; the auth layer is the
-proxy's job.
+nginx + mTLS, or any reverse-proxy gating they bring): the auth layer
+is the proxy's job. Recto keeps two lines of its own:
+
+- A loopback bind answers only a request whose Host names loopback,
+  or the ``expose_via_tunnel.hostname`` the operator declared (a
+  string or a list). Any other Host is refused.
+- ``cf_access_required`` (default true) says the UI sits behind an
+  access proxy. Recto verifies no access token itself, so with it set
+  a bind beyond loopback is refused; an operator who gates the
+  network some other way sets it to false.
 
 What v0.2 ships
 ---------------
@@ -364,8 +371,26 @@ setInterval(refresh, 5000);
 # ---------------------------------------------------------------------------
 
 
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _host_name(header: str | None) -> str:
+    """The name in a Host header, without its port; '' when there is none."""
+    value = (header or "").strip().lower()
+    if value.startswith("["):
+        return value[1:].partition("]")[0]
+    return value.partition(":")[0]
+
+
+def _declared_hosts(spec: AdminUISpec) -> frozenset[str]:
+    declared = spec.expose_via_tunnel.get("hostname")
+    names = declared if isinstance(declared, list) else [declared]
+    return frozenset(n.strip().lower() for n in names if isinstance(n, str) and n.strip())
+
+
 def _build_handler(
     server_state: "_ServerState",
+    allowed_hosts: frozenset[str] | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     """Build a request handler class with a closure over the shared state.
 
@@ -383,6 +408,16 @@ def _build_handler(
             return
 
         def do_GET(self) -> None:  # noqa: N802 - http.server name
+            if allowed_hosts is not None and _host_name(self.headers.get("Host")) not in allowed_hosts:
+                self._respond_json(
+                    {
+                        "error": "host_not_allowed",
+                        "detail": "this UI answers on loopback; name a public hostname in "
+                                  "spec.admin_ui.expose_via_tunnel.hostname",
+                    },
+                    status=403,
+                )
+                return
             parsed = urlparse(self.path)
             path = parsed.path
             query = parse_qs(parsed.query)
@@ -555,8 +590,21 @@ class AdminUIServer:
         if not self.spec.enabled:
             return
         host, port = self._parse_bind(self.spec.bind)
+        loopback = host.strip("[]").lower() in _LOOPBACK_HOSTS
+        if not loopback and self.spec.cf_access_required:
+            self._emit(
+                "adminui.bind_refused",
+                {
+                    "bind": self.spec.bind,
+                    "reason": "cf_access_required",
+                    "message": "a bind beyond loopback needs cf_access_required: false - Recto verifies no access token",
+                },
+            )
+            return
         try:
-            handler_cls = _build_handler(self._state)
+            handler_cls = _build_handler(
+                self._state, _LOOPBACK_HOSTS | _declared_hosts(self.spec) if loopback else None
+            )
             self._server = ThreadingHTTPServer((host, port), handler_cls)
         except OSError as exc:
             self._emit(

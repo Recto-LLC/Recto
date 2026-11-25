@@ -1072,8 +1072,8 @@ def test_c2_verify_jws_with_parent_profile_recovers_against_child_key(
     jws = _mint_jws_with_priv(claims, child_priv)
 
     # The OPERATOR pubkey passed as expected_pubkey is the master
-    # root. With parent_profile set, verify_jws ignores
-    # expected_pubkey and dispatches against the child profile's
+    # root. With parent_profile set, verify_jws holds the profile's
+    # master to it and recovers against the child profile's
     # derived_pubkey_hex from state_dir.
     operator_pubkey = bytes.fromhex(master_pubkey_hex)
     verified = verify_jws(
@@ -1084,6 +1084,33 @@ def test_c2_verify_jws_with_parent_profile_recovers_against_child_key(
     )
     assert verified.parent_profile == child_id
     assert verified.sub == "agent:test@dev"
+
+
+def test_c2_verify_jws_rejects_a_profile_of_another_master(tmp_path):
+    """The key a token is checked against comes from the caller: a profile
+    the state directory holds under ANOTHER master than expected_pubkey is
+    refused, however well its own key signed."""
+    from recto.capability.jwt import verify_jws
+
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(mode=0o700)
+    child_priv, child_pub = _generate_secp256k1_keypair()
+    _, child_id, _ = _bootstrap_master_with_child(state_dir, child_pubkey_hex=child_pub.hex())
+    jws = _mint_jws_with_priv(_make_claims_for_profile(parent_profile=child_id), child_priv)
+    _, another_operator = _generate_secp256k1_keypair()
+
+    with pytest.raises(ValueError, match="another master"):
+        verify_jws(jws, expected_pubkey=another_operator, expected_aud="test-aud", state_dir=state_dir)
+
+
+@pytest.mark.parametrize("pubkey", [b"", b"\x04" + b"k" * 64, b"k" * 63, None, "k" * 64])
+def test_verify_jws_refuses_an_expected_key_that_is_not_one(pubkey):
+    from recto.capability.jwt import verify_jws
+
+    priv, _ = _generate_secp256k1_keypair()
+    jws = _mint_jws_with_priv(_make_claims_for_profile(parent_profile=None), priv)
+    with pytest.raises(ValueError, match="expected_pubkey must be 64 raw bytes"):
+        verify_jws(jws, expected_pubkey=pubkey, expected_aud="test-aud")
 
 
 def test_c2_verify_jws_without_parent_profile_uses_operator_key(tmp_path):

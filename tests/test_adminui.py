@@ -252,6 +252,66 @@ class TestAdminUIServerLifecycle:
             first.stop()
 
 
+def _get_as(port: int, host: str | None, path: str = "/api/status") -> int:
+    """GET on loopback with a Host header of our choosing (None sends none)."""
+    import http.client
+
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2.0)
+    try:
+        conn.putrequest("GET", path, skip_host=True)
+        if host is not None:
+            conn.putheader("Host", host)
+        conn.endheaders()
+        return conn.getresponse().status
+    finally:
+        conn.close()
+
+
+class TestAdminUIHosts:
+    @pytest.mark.parametrize("host", ["127.0.0.1", "127.0.0.1:5050", "localhost:1", "LOCALHOST", "[::1]:5050"])
+    def test_a_loopback_bind_answers_a_loopback_host(self, running_server: Any, host: str) -> None:
+        _, port = running_server[0].bound_address
+        assert _get_as(port, host) == 200
+
+    @pytest.mark.parametrize("host", ["rebound.example", "127.0.0.1.example:5050", "", None])
+    @pytest.mark.parametrize("path", ["/", "/api/status", "/api/events"])
+    def test_and_refuses_any_other(self, running_server: Any, host: str | None, path: str) -> None:
+        _, port = running_server[0].bound_address
+        assert _get_as(port, host, path) == 403
+
+    @pytest.mark.parametrize("declared", ["recto.example.com", ["other.example", "Recto.Example.com"]])
+    def test_the_declared_tunnel_hostname_is_answered(self, declared: Any) -> None:
+        spec = AdminUISpec(enabled=True, bind="127.0.0.1:0", expose_via_tunnel={"hostname": declared})
+        server = AdminUIServer(spec, service_name="x", buffer=EventBuffer(), config=make_config())
+        server.start()
+        try:
+            _, port = server.bound_address
+            assert _get_as(port, "recto.example.com") == 200
+            assert _get_as(port, "another.example") == 403
+        finally:
+            server.stop()
+
+    def test_a_bind_beyond_loopback_is_refused_while_an_access_proxy_is_required(self) -> None:
+        failures: list[tuple[str, dict[str, Any]]] = []
+        server = AdminUIServer(
+            AdminUISpec(enabled=True, bind="0.0.0.0:0"), service_name="x", buffer=EventBuffer(), config=make_config(),
+            emit_failure=lambda k, c: failures.append((k, c)))
+        server.start()
+        assert server.bound_address is None
+        assert [(k, c["reason"]) for k, c in failures] == [("adminui.bind_refused", "cf_access_required")]
+
+    def test_and_binds_where_the_operator_says_the_network_is_gated(self) -> None:
+        server = AdminUIServer(
+            AdminUISpec(enabled=True, bind="0.0.0.0:0", cf_access_required=False), service_name="x",
+            buffer=EventBuffer(), config=make_config())
+        server.start()
+        try:
+            assert server.bound_address is not None
+            assert _get_as(server.bound_address[1], "host.example") == 200
+        finally:
+            server.stop()
+
+
 class TestAdminUIServerRoutes:
     def test_index_returns_html(self, running_server: Any) -> None:
         server, _buf = running_server

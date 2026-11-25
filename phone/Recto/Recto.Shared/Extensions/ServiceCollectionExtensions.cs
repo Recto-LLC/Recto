@@ -59,6 +59,10 @@ public static class ServiceCollectionExtensions
         // that takes IReadSigner once it is registered.
         services.AddSingleton<IReadSigner, PollKeyReadSigner>();
 
+        // What each request id was first shown with: the app's, so a page that
+        // is left and entered again still knows it.
+        services.AddSingleton<Recto.Shared.Capability.SeenPayloads>();
+
         services.AddHttpClient<IBootloaderClient, BootloaderClient>(client =>
         {
             client.Timeout = TimeSpan.FromSeconds(15);

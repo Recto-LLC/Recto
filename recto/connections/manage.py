@@ -23,6 +23,7 @@ from .types import (
     ConnectionMeta,
     ConnectionStore,
     normalize_connection_key,
+    require_text_fields,
     vault_secret_name,
 )
 
@@ -125,6 +126,7 @@ def set_connection(
     """
     if not service:
         raise ValueError("service must be non-empty")
+    require_text_fields(service=service, display_name=display_name, category=category)
     key = normalize_connection_key(key)
     now = int(time.time())
 

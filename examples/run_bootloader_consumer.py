@@ -107,14 +107,23 @@ Pairing-code mint (existing convention):
 Signed polls (hard rule 14.2 -- the phone's reads are signed by its key):
     RECTO_SIGNED_POLL_MODE  "off" | "advisory" (default when unset) |
                             "required". Advisory admits unsigned reads -
-                            except the phone list and owner-slot cards, which
-                            need a verified signature in every mode - and logs
+                            except the phone list, the push token and
+                            owner-slot cards, which need a verified
+                            signature in every mode - and logs
                             a per-read verdict (signed-valid / signed-invalid
                             / unsigned) on recto.bootloader.signed_polls;
                             required answers an unsigned or invalid read
                             with 401. Flip only after the verdict log shows
                             every live phone signing. Any other value
                             refuses startup (exit 2) -- never coerced.
+
+The card queue's caps:
+    RECTO_MAX_OPEN_CARDS_PER_AGENT  Default 12. The open cards one agent may
+                            hold on one phone for one signed subject.
+    RECTO_MAX_OPEN_CARDS_PER_PHONE  Default 40. The open cards all agents
+                            together may hold on one phone. A request past
+                            either is refused 429 by name; neither goes
+                            below 1.
 
 Folder-drop event bus (RECTO_EVENTS_DIR):
     When set + writable, the launcher constructs a FileEventEmitter
@@ -337,7 +346,14 @@ import sys
 from typing import Mapping
 
 from recto.bootloader.events import construct_from_env as construct_events_emitter
-from recto.bootloader.server import SIGNED_POLL_MODES, BootloaderError, ChallengeStore, create_server
+from recto.bootloader.server import (
+    MAX_OPEN_CARDS_PER_AGENT,
+    MAX_OPEN_CARDS_PER_PHONE,
+    SIGNED_POLL_MODES,
+    BootloaderError,
+    ChallengeStore,
+    create_server,
+)
 from recto.bootloader.state import SLOTS
 from recto.bootloader.state import AppContext, StateStore
 from recto.secrets.dpapi_machine import DpapiMachineSource
@@ -1648,6 +1664,8 @@ def main() -> int:
             challenges=challenges,
             bootloader_id=bootloader_id,
             signed_poll_mode=signed_poll_mode,
+            max_open_cards_per_agent=_env_int("RECTO_MAX_OPEN_CARDS_PER_AGENT", default=MAX_OPEN_CARDS_PER_AGENT),
+            max_open_cards_per_phone=_env_int("RECTO_MAX_OPEN_CARDS_PER_PHONE", default=MAX_OPEN_CARDS_PER_PHONE),
             capability_manifest_path=capability_manifest_path,
             capability_agent_tokens=capability_agent_tokens,
             capability_agent_requestable=capability_agent_requestable or None,

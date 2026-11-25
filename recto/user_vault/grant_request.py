@@ -42,14 +42,15 @@ RATE_LIMITED = "grant_request_rate_limited"
 
 def clean_text(value: Any, name: str, cap: int) -> str | None:
     """The platform's words, checked: absent or empty is None; over ``cap`` characters, or carrying a control or format
-    character (a bidi override can make a card read one way and mean another), is refused."""
+    character (a bidi override can make a card read one way and mean another) or half of a surrogate pair (the phone
+    cannot read one), is refused."""
     if value is None or value == "":
         return None
     if not isinstance(value, str):
         raise GrantRefused(REQUEST_INVALID, f"{name} must be a string")
     if len(value) > cap:
         raise GrantRefused(REQUEST_INVALID, f"{name} is at most {cap} characters")
-    if any(unicodedata.category(ch) in ("Cc", "Cf") for ch in value):
+    if any(unicodedata.category(ch) in ("Cc", "Cf", "Cs") for ch in value):
         raise GrantRefused(REQUEST_INVALID, f"{name} may not carry control or format characters")
     return value.strip() or None
 

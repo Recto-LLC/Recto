@@ -30,8 +30,11 @@ replay of a chain's opening entries. Once any device has been sealed:
   * the passphrase is never removed, only replaced (an `add` of the passphrase kind,
     signed by the current passphrase and a device).
 
-A chain with no passphrase member keeps the MAJORITY below for REPLAY only; the top
-plane refuses every act there (genesis_authority.verify_top_plane).
+A chain with no passphrase member keeps the MAJORITY below for REPLAY only, so a chain
+written before the rule still reads. The top plane refuses every act there
+(genesis_authority.verify_top_plane), and the writer appends one entry only: the add
+that seats the passphrase (require_appendable). Neither a seal nor a rotation is read
+from a set that never held one.
 
 THE MAJORITY (the legacy replay rule)
 -------------------------------------
@@ -99,6 +102,7 @@ __all__ = [
     "entry_hash",
     "replay",
     "replay_state",
+    "require_appendable",
     "signing_bytes",
 ]
 
@@ -354,6 +358,9 @@ def replay_state(entries: Iterable[ChainEntry]) -> ChainState:
                     "claim nothing can check"
                 )
         else:
+            if entry.op in (_SEAL_ID, _ROTATE) and PASSPHRASE_KIND not in members:
+                raise ChainError(f"entry {entry.seq}: a {entry.op} is a top-plane act and no passphrase is sealed in "
+                                 f"this chain - it needs the passphrase and a device (hard rule 14.7)")
             # The seal-id entry is the first one in the digest form: it is signed over its OWN id.
             entry_seal = sealed_id
             if entry.op == _SEAL_ID:
@@ -438,6 +445,22 @@ def replay_state(entries: Iterable[ChainEntry]) -> ChainState:
         tip_hash=None if previous is None else entry_hash(previous), length=count, resets=tuple(resets),
         sealed_operator_pubkey=sealed_operator_pubkey,
     )
+
+
+def require_appendable(entries: Sequence[ChainEntry]) -> None:
+    """Raise ChainError unless the LAST entry is one a writer may add (hard rule 14.7): every roster change needs the
+    passphrase, so a set that holds none takes one change only - the add that seats it. The chain must already
+    replay; entry 0 starts a chain and has no set to answer to."""
+    if len(entries) < 2:
+        return
+    entry = entries[-1]
+    if PASSPHRASE_KIND in replay(entries[:-1]):
+        return
+    if entry.op != _ADD or entry.kind != PASSPHRASE_KIND:
+        raise ChainError(
+            f"entry {entry.seq} ({entry.op} {entry.kind!r}) changes a set that holds no passphrase. Every roster change "
+            f"needs the passphrase (hard rule 14.7): seat it first - an add of kind {PASSPHRASE_KIND!r}, signed by the "
+            f"set as it stands.")
 
 
 def seal_mark_of(entries: Sequence[ChainEntry], state: ChainState) -> dict[str, Any] | None:
@@ -559,7 +582,7 @@ def _decode_id(entry: ChainEntry) -> str:
 
 
 def required_signatures(member_count: int) -> int:
-    """A majority: `(N // 2) + 1` -- the legacy rule, for a chain with no passphrase member.
+    """A majority: `(N // 2) + 1` -- the legacy replay rule, for a chain with no passphrase member.
 
     Exposed rather than inlined so the threshold is one value in one place --
     the replay, the writer, and any operator-facing message all read it here.

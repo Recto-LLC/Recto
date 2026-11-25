@@ -13,10 +13,23 @@ public sealed record PendingRequest(
     [property: JsonPropertyName("kind")] string Kind,
     [property: JsonPropertyName("service")] string Service,
     [property: JsonPropertyName("secret")] string Secret,
-    [property: JsonPropertyName("context")] PendingRequestContext Context);
+    [property: JsonPropertyName("context")] PendingRequestContext Context)
+{
+    /// <summary>The kind an unreadable card named, when that much could be read: whose queue its denial goes to.</summary>
+    [JsonIgnore]
+    public string? NamedKind { get; init; }
+
+    /// <summary>A card this app cannot read, kept on the queue under its id (empty when that cannot be read either).</summary>
+    public static PendingRequest Unreadable(string requestId, string? namedKind = null)
+        => new(requestId, PendingRequestKind.Unreadable, string.Empty, string.Empty,
+            new PendingRequestContext(0, string.Empty, 0, string.Empty)) { NamedKind = namedKind };
+}
 
 public static class PendingRequestKind
 {
+    /// <summary>This app's own: a card on the queue it could not read. It is shown as that, with a Deny.</summary>
+    public const string Unreadable = "unreadable";
+
     /// <summary>v0.4 default: phone signs a payload hash with the enclave keypair.</summary>
     public const string SingleSign = "single_sign";
 

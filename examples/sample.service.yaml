@@ -164,7 +164,8 @@ spec:
   admin_ui:
     enabled: true
     bind: 127.0.0.1:5050
-    cf_access_required: true    # advisory; no enforcement in v0.2
+    cf_access_required: true    # a bind beyond loopback is refused while this is true
+    # A loopback bind answers only loopback Host names and this one:
     # expose_via_tunnel:
     #   hostname: recto.example.com
     #   service_token_env: CF_TUNNEL_SERVICE_TOKEN

@@ -123,26 +123,22 @@ signs cannot be phished into signing.
   public key is written, and the phrase itself exists nowhere in the vault.
 - The **devices** sign from their secure elements like any other paired phone.
 
-### Changing the set requires a majority of it
+### Changing the set requires the passphrase and one device
 
 Membership is a signed chain. Each change carries the hash of the entry before
-it and the signatures of a majority of the members as they stood:
+it, the passphrase's signature and the signature of one owner device. The
+passphrase alone signs only until the first device is sealed.
 
-```
-k = (N // 2) + 1        N=1 → 1     N=2 → 2     N=3 → 2
-```
-
-**Majority rather than unanimity, and the reason is recovery.** If every member
-had to sign, losing one device would be unrecoverable: removing it would
+**One device rather than all of them, and the reason is recovery.** If every
+device had to sign, losing one would be unrecoverable: removing it would
 require its own signature, so the roster would freeze — and a frozen roster
-cannot admit a replacement either. One loss would permanently degrade the set
-to something it could not repair. With three members, any two can drop a lost
-device *and* enrol its replacement. One member still cannot alter the roster
-alone.
+cannot admit a replacement either. The passphrase and the surviving device drop
+a lost one *and* enrol its replacement. No device, and no set of devices,
+alters the roster alone.
 
-**Two members is the weak point**: a majority of two is two, so that set has no
-fault tolerance. It is unavoidable on the way from one member to three, and it
-should be brief. Three is the first configuration that survives a loss.
+A chain written before this rule, with no passphrase in it, still reads. It
+takes one change: the entry that seats the passphrase, signed by a majority of
+the members as they stand.
 
 ### The chain is detection, not permission
 
@@ -304,7 +300,21 @@ X-Recto-Agent-Token: <64-hex>
 ```
 
 The body carries the claim you want signed (schema below) and a `purpose` string
-the operator will read on their phone.
+the operator will read on their phone, whole: up to 2000 characters, a part at a
+time when it does not fit the card, with the decision in the first 240.
+
+A card takes a person's attention, so the queue has limits. An agent holds at
+most 12 open cards on one phone for one `sub`, and all agents together at most 40
+(`max_open_cards_per_agent`, `max_open_cards_per_phone`); a `sub` with no open
+card there is admitted up to 8 past the 40. Past a limit the answer is 429
+`agent_cards_open_limit` or `phone_cards_open_limit`, with the `bound` that was
+met, until one is answered or expires. An agent asks at most 30 times a minute for
+one `sub` (429 `card_raise_rate_limit`, with `retry_after_seconds`). A card lives
+at least 30 seconds (400 `card_life_too_short`). Its fields are strings that
+encode as UTF-8 (400 `card_field_not_text`) and have lengths (400
+`card_field_too_long`); both name the field. A request that asks exactly what an
+open card of yours already asks raises no second card: the answer carries that
+card's id and `"status": "already_open"`, and the phone is woken again.
 
 A request for one of your MEMBERS' phones (a phone that paired on a member
 code, beside the owner's two slots) also names the member it is for, as the

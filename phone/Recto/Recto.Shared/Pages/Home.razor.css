@@ -149,6 +149,7 @@
 
 .rec-pending-card-body {
     padding: 0.7rem 0.8rem;
+    overflow-wrap: anywhere;    /* the card clips what overflows it, so nothing may */
 }
 
 /* ---- Per-coin badges (live inside .rec-pending-card-body) ---- */

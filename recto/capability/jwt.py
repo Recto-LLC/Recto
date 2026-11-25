@@ -227,7 +227,9 @@ def verify_jws(
         token: the 3-part JWS string.
         expected_pubkey: the operator's master pubkey (64-byte raw
             X || Y). Used as the signature-recovery target when the
-            JWS has no parent_profile claim.
+            JWS has no parent_profile claim. When it has one, the
+            profile's master must be this key: a profile of another
+            master is refused, whatever the state directory holds.
         expected_aud: optional audience check.
         now: optional time override.
         state_dir: optional bootloader state directory. Required ONLY
@@ -244,6 +246,8 @@ def verify_jws(
             audience / parent_profile lookup failures.
     """
     header, payload, signature, signing_input = parse_jws(token)
+    if not isinstance(expected_pubkey, (bytes, bytearray)) or len(expected_pubkey) != 64:
+        raise ValueError("signature: expected_pubkey must be 64 raw bytes (X || Y)")
 
     # 2. Header validation
     if header.get("alg") != "ES256K":
@@ -311,6 +315,11 @@ def verify_jws(
                 f"claims: JWS parent_profile "
                 f"{parent_profile_claim!r} cannot be resolved -- no "
                 f"master is bootstrapped at state_dir {state_dir!r}"
+            )
+        if not _is_master(mi.master_pubkey_hex, bytes(expected_pubkey)):
+            raise ValueError(
+                f"claims: JWS parent_profile {parent_profile_claim!r} belongs "
+                f"to another master than the expected operator public key"
             )
         matching_profile = None
         for p in mi.profiles:
@@ -404,6 +413,13 @@ def verify_jws(
 
     # 6. Convert to typed claims
     return _dict_to_claims(payload)
+
+
+def _is_master(master_pubkey_hex: str, expected_pubkey: bytes) -> bool:
+    try:
+        return bytes.fromhex(master_pubkey_hex) == expected_pubkey
+    except (TypeError, ValueError):
+        return False
 
 
 def _require_claim_types(payload: dict[str, Any]) -> None:

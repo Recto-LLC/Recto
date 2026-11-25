@@ -327,9 +327,10 @@ def build_parser() -> argparse.ArgumentParser:
         "enrol-member",
         help=(
             "Add or remove a genesis member THROUGH THE CHAIN. Entry 0 is "
-            "unsigned (genesis); every entry after it requires a majority "
-            "of the current members to sign. Run with --show-challenge to "
-            "get the bytes to sign, then again with --signature."
+            "unsigned (genesis); every entry after it needs the passphrase, "
+            "and one owner device once any has been sealed (hard rule 14.7). "
+            "Run with --show-challenge to get the bytes to sign, then again "
+            "with --signature."
         ),
     )
     p_vault_enrol.add_argument(
@@ -1859,8 +1860,8 @@ def _cmd_vault_seal_passphrase(args, *, out, err):
     # the genesis chain's replay, and a seal here rewrites the file from the
     # flat map, dropping the chain. Asked before the phrase is: a phrase this
     # vault can never take is not asked for. (An unparseable file is the
-    # unreadable case below, with its own --force rule; the store's writer
-    # still refuses any file that carries a chain.)
+    # unreadable case below; the store's writer refuses it, and any file that
+    # carries a chain, whatever this command was passed.)
     _CHAINED = (
         "REFUSING: this vault keeps its members in its genesis chain, and a seal "
         "would write over the chain. A chained vault's members change only by a "
@@ -1891,9 +1892,21 @@ def _cmd_vault_seal_passphrase(args, *, out, err):
     # slot is free, and QUIETLY OVERWRITES A DAMAGED MEMBER -- turning a
     # recoverable problem into an unrecoverable one, on the exact command an
     # operator would reach for after seeing an error.
+    unreadable = state.list_unreadable_genesis_members() if existing is None else {}
+    whole = unreadable.get("<file>") or unreadable.get("<chain>")
+    if whole:
+        print(
+            f"REFUSING: {whole}\n"
+            "A file that cannot be read is never written over, --force or not: "
+            "it may hold a chain, or the only copy of a member. Restore the "
+            "state directory from backup; move the file aside yourself only "
+            "if you have decided what it holds is genuinely lost. "
+            "Nothing was written.",
+            file=err,
+        )
+        return 3
     if existing is None and not getattr(args, "force", False):
-        unreadable = state.list_unreadable_genesis_members()
-        reason = unreadable.get(PASSPHRASE_MEMBER_KIND) or unreadable.get("<file>")
+        reason = unreadable.get(PASSPHRASE_MEMBER_KIND)
         if reason:
             print(
                 "REFUSING: a passphrase member IS stored but cannot be "
@@ -1935,8 +1948,8 @@ def _cmd_vault_seal_passphrase(args, *, out, err):
 
     try:
         state.put_genesis_member(PASSPHRASE_MEMBER_KIND, pubkey)
-    except _ChainError:
-        print(_CHAINED, file=err)
+    except _ChainError as exc:
+        print(f"REFUSING: {exc} Nothing was written.", file=err)
         return 3
     print("", file=out)
     print("  SEALED.", file=out)
@@ -1966,7 +1979,8 @@ def _cmd_vault_verify_passphrase(args, *, out, err):
         # is sealed" during a real recovery, an operator concludes the vault
         # is empty and starts over -- destroying what was still there.
         unreadable = state.list_unreadable_genesis_members()
-        reason = unreadable.get(PASSPHRASE_MEMBER_KIND) or unreadable.get("<file>")
+        reason = (unreadable.get(PASSPHRASE_MEMBER_KIND) or unreadable.get("<file>")
+                  or unreadable.get("<chain>"))
         if reason:
             print(
                 "UNREADABLE: a passphrase member IS stored but cannot be "
@@ -2065,6 +2079,7 @@ def _cmd_vault_enrol_member(args, *, out, err):
             return 3
 
     op = "remove" if args.remove else "add"
+    seats_passphrase = op == "add" and kind == PASSPHRASE_MEMBER_KIND
 
     # ---------------------------------------------------------------- genesis
     if seq == 0:
@@ -2183,6 +2198,16 @@ def _cmd_vault_enrol_member(args, *, out, err):
         )
         return 2
 
+    if PASSPHRASE_MEMBER_KIND not in current and not seats_passphrase:
+        # Said before anyone is asked to sign: the store would refuse it after.
+        print(
+            "REFUSING: this chain holds no passphrase, and every roster change "
+            "needs it (hard rule 14.7). Seat it first: --kind passphrase "
+            "--pubkey <hex>, signed by the set as it stands.",
+            file=err,
+        )
+        return 2
+
     if args.remove:
         if kind not in current:
             print(
@@ -2241,15 +2266,12 @@ def _cmd_vault_enrol_member(args, *, out, err):
         print(f"  Entry {seq}: {op} {kind!r} ({algorithm})", file=out)
         print(f"  Current members ({len(current)}): "
               f"{', '.join(sorted(current))}", file=out)
-        print(f"  Signatures required: {needed} of {len(current)} (a majority)",
-              file=out)
-        if len(current) == 2:
-            # Named because the chain's own docstring calls this the window to
-            # minimise: at N=2 a majority IS both members, so the set has no
-            # fault tolerance. Worth saying at the moment an operator is
-            # standing in it.
-            print("  NOTE: at two members a majority is BOTH of them, so the "
-                  "set cannot yet survive losing one. Get to three.", file=out)
+        if PASSPHRASE_MEMBER_KIND in current:
+            print("  Signatures required: the passphrase, and one owner device "
+                  "once any has been sealed", file=out)
+        else:
+            print(f"  Signatures required: {needed} of {len(current)} (a majority) "
+                  "to seat the passphrase", file=out)
         print("", file=out)
         print("  Bytes to sign (base64url):", file=out)
         print(f"    {_b64u(challenge)}", file=out)

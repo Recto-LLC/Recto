@@ -216,6 +216,23 @@ def _act(ctx, record: ActRecord | dict, jws: str):
     return _http(f"{ctx['base']}/v0.4/connections/act", {"jws": jws, "record": rec})
 
 
+# -- a store that cannot be read spends no grant ----------------------------------------------------------------------
+
+def test_a_grant_is_still_the_persons_when_the_metadata_cannot_be_read(boot):
+    path = boot["tmp"] / "connections.json"
+    kept = path.read_text(encoding="utf-8")
+    record = _record("disable")
+    claims = _claims(record)
+    jws = _mint(claims, boot["priv"])
+    path.write_text("{ not json", encoding="utf-8")
+    status, body = _act(boot, record, jws)
+    assert status == 503 and body["error"] == "metadata_unreadable", body
+    assert not boot["state"].is_revoked(claims.jti)
+    path.write_text(kept, encoding="utf-8")
+    status, body = _act(boot, record, jws)
+    assert status == 200 and body["connection"]["enabled"] is False, body
+
+
 # -- the record -------------------------------------------------------------------------------------------------------
 
 class TestActRecord:

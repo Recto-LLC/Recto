@@ -57,6 +57,8 @@
 @inject PushTokenSync PushSync
 @inject IPushTokenRefreshSignal PushTokenRefresh
 @inject IAppResumeSignal AppResume
+@* What each request id was first shown with, kept by the app rather than by the page. *@
+@inject Recto.Shared.Capability.SeenPayloads SeenCards
 
 <PageTitle>Recto</PageTitle>
 
@@ -302,7 +304,7 @@
         *@
         @if (!IsDemoMode && HasKnownConsumer)
         {
-        <details class="rec-pairing-details">
+        <details class="rec-pairing-details" open="@_pairServiceOpen">
             <summary class="rec-pairing-summary">
                 <span class="rec-pairing-summary-label">Add a service</span>
                 <span class="rec-pairing-summary-hint">Tap to open</span>
@@ -361,6 +363,14 @@
                             <span>Pair with @_pairServiceTargetName</span>
                         }
                     </button>
+                    @if (_pairServiceFingerprint is not null)
+                    {
+                        <p class="small text-start mt-3 mb-0">
+                            This phone's fingerprint: <code>@_pairServiceFingerprint</code><br />
+                            @_pairServiceTargetName shows a device fingerprint before it approves. Approve
+                            there only if the two are the same.
+                        </p>
+                    }
                     @if (!string.IsNullOrEmpty(_pairServiceError))
                     {
                         <div class="alert alert-danger small mt-3 mb-0 text-start" role="alert">
@@ -388,6 +398,14 @@
                     <div class="alert alert-success small text-start mb-3" role="status">
                         <strong>✓ Paired</strong>
                         <div class="mt-2">@_pairServiceSuccessMessage</div>
+                        @if (_pairServiceFingerprint is not null)
+                        {
+                            <div class="mt-2">
+                                This phone's fingerprint: <code>@_pairServiceFingerprint</code><br />
+                                If @_pairServiceTargetName asks you to approve this device, approve only if the
+                                fingerprint it shows is the same.
+                            </div>
+                        }
                     </div>
                     <button type="button"
                             class="btn btn-outline-primary w-100"
@@ -434,6 +452,10 @@
                                 @onclick="HandleStartFreshClick">
                             Start fresh
                         </button>
+                        @if (!string.IsNullOrEmpty(_errorMessage))
+                        {
+                            <div class="text-danger mt-2" role="alert">@_errorMessage</div>
+                        }
                     </div>
                 }
                 <h2 class="h5 mb-3 text-success">Paired</h2>
@@ -594,9 +616,8 @@
                 </details>
 
                 @{
-                    var totpFresh = _lastTotpAt is not null
-                        && (DateTimeOffset.UtcNow - _lastTotpAt.Value).TotalSeconds < 30
-                        && _lastTotpCode is not null;
+                    var totpFresh = TotpFresh;
+                    HoldAsPanelsMove(totpFresh);
                 }
                 @if (totpFresh)
                 {
@@ -688,6 +709,28 @@
                         // inside the else { } block, so no @{ } wrapper
                         // is needed (Razor RZ1010: "you do not need to
                         // use @{ to switch to code").
+                        RenderFragment<PendingRequest> renderDeny = (PendingRequest req) =>
+                            @<div class="rec-btn-row">
+                                @if (Recto.Shared.Capability.CapabilityCardDesk.CanDeny(req))
+                                {
+                                    <button class="rec-btn rec-btn-deny"
+                                            disabled="@(!string.IsNullOrEmpty(_processingRequestId))"
+                                            @onclick="() => HandleDenyAsync(req)">
+                                        Deny
+                                    </button>
+                                }
+                            </div>;
+
+                        // A card whose drawing failed: that card's refusal, with the ones beside it as they were.
+                        RenderFragment<PendingRequest> renderRefused = (PendingRequest req) =>
+                            @<div class="rec-pending-card" data-kind="@PendingRequestKind.Unreadable">
+                                <div class="rec-pending-card-body">
+                                    <p class="mb-1 fw-semibold text-danger">Unreadable request</p>
+                                    <div class="alert alert-warning small text-start mb-2" role="alert">@Recto.Shared.Capability.CapabilityCardDesk.UnreadableText</div>
+                                    @renderDeny(req)
+                                </div>
+                            </div>;
+
                         RenderFragment<PendingRequest> renderCard = (PendingRequest req) =>
                             @<div class="rec-pending-card" data-kind="@req.Kind">
                                 <div class="rec-pending-card-body">
@@ -721,7 +764,7 @@
                                             {
                                                 <img class="rec-app-banner-icon"
                                                      src="@appCtx.AppIconUrl"
-                                                     alt="@appCtx.AppName icon"
+                                                     alt="@(Recto.Shared.Capability.VisibleText.Of(appCtx.AppName)) icon"
                                                      loading="lazy"
                                                      onerror="this.style.display='none'; var m=this.nextElementSibling; if (m) m.style.display='flex';" />
                                                 <div class="rec-app-banner-icon rec-app-banner-monogram"
@@ -735,14 +778,14 @@
                                                      aria-hidden="true">@appMonogram</div>
                                             }
                                             <div class="rec-app-banner-text">
-                                                <div class="rec-app-banner-name">@appCtx.AppName</div>
+                                                <div class="rec-app-banner-name"><CardText Value="@appCtx.AppName" /></div>
                                                 @if (!string.IsNullOrEmpty(appCtx.AppDescription))
                                                 {
-                                                    <div class="rec-app-banner-desc">@appCtx.AppDescription</div>
+                                                    <div class="rec-app-banner-desc"><CardText Value="@appCtx.AppDescription" /></div>
                                                 }
                                                 @if (!string.IsNullOrEmpty(appCtx.AppUrl))
                                                 {
-                                                    <div class="rec-app-banner-url"><code>@appCtx.AppUrl</code></div>
+                                                    <div class="rec-app-banner-url"><code><CardText Value="@(appCtx.AppUrl)" /></code></div>
                                                 }
                                             </div>
                                             @if (!string.IsNullOrEmpty(appCtx.AppVersion))
@@ -757,7 +800,7 @@
                                                    caller passed null so this branch wasn't reached
                                                    until tonight. Same Razor-parser quirk that bites
                                                    adjacent-character expressions across the codebase. *@
-                                                <div class="rec-app-banner-version">v@(appCtx.AppVersion)</div>
+                                                <div class="rec-app-banner-version">v<CardText Value="@appCtx.AppVersion" /></div>
                                             }
                                         </div>
                                     }
@@ -775,6 +818,9 @@
                                     }
                                     @switch (req.Kind)
                                     {
+                                        case PendingRequestKind.Unreadable:
+                                            <p class="mb-1 fw-semibold text-danger">Unreadable request</p>
+                                            break;
                                         case PendingRequestKind.UserVaultGrant:
                                         case PendingRequestKind.UserVaultRevoke:
                                             @* R-series step 3: the card renders every signed field and owns its
@@ -784,6 +830,7 @@
                                                                PhoneId="@(_paired?.PhoneId ?? string.Empty)"
                                                                PairedBootloaderId="@(_paired?.BootloaderId ?? string.Empty)"
                                                                IdentityKeyAlias="@KeyAlias"
+                                                               Held="@Cards.IsHeld(req.RequestId)"
                                                                OnResolved="OnUserVaultResolvedAsync" />
                                             break;
                                         case PendingRequestKind.SingleSign:
@@ -793,17 +840,17 @@
                                                "Audit details" disclosure per the owner's 2026-05-18 ask
                                                ("collapse them all but make them visible on tap"). *@
                                             <p class="mb-1 fw-semibold">
-                                                <span class="badge bg-secondary me-1">sign</span>@req.Context.OperationDescription
+                                                <span class="badge bg-secondary me-1">sign</span><CardText Prose="true" Value="@req.Context.OperationDescription" />
                                             </p>
-                                            <p class="mb-2 text-muted small"><code>@req.Service</code>/<code>@req.Secret</code></p>
+                                            <p class="mb-2 text-muted small"><code><CardText Value="@(req.Service)" /></code>/<code><CardText Value="@(req.Secret)" /></code></p>
                                             <details class="rec-disclosure">
                                                 <summary>Audit details</summary>
                                                 <div class="rec-disclosure-body">
                                                     <p class="mb-1 text-muted small">
-                                                        Hash: <code>@TruncateHash(req.Context.PayloadHashB64u ?? "")</code>
+                                                        Hash: <code><CardText Value="@(TruncateHash(req.Context.PayloadHashB64u ?? ""))" /></code>
                                                     </p>
                                                     <p class="mb-0 text-muted small">
-                                                        From PID @req.Context.ChildPid (<code>@req.Context.ChildArgv0</code>)
+                                                        From PID @req.Context.ChildPid (<code><CardText Value="@(req.Context.ChildArgv0)" /></code>)
                                                     </p>
                                                 </div>
                                             </details>
@@ -813,16 +860,16 @@
                                                 <span class="badge bg-warning text-dark me-1">TOTP</span>Provision secret
                                             </p>
                                             <p class="mb-1 text-muted small">
-                                                Alias: <code>@req.Context.TotpAlias</code>
+                                                Alias: <code><CardText Value="@(req.Context.TotpAlias)" /></code>
                                             </p>
-                                            <p class="mb-2 text-muted small">@req.Context.OperationDescription</p>
+                                            <p class="mb-2 text-muted small"><CardText Prose="true" Value="@req.Context.OperationDescription" /></p>
                                             <details class="rec-disclosure">
                                                 <summary>Audit details</summary>
                                                 <div class="rec-disclosure-body">
                                                     <p class="mb-0 text-muted small">
                                                         Period: @(req.Context.TotpPeriodSeconds ?? 30)s,
                                                         digits: @(req.Context.TotpDigits ?? 6),
-                                                        alg: @(req.Context.TotpAlgorithm ?? "SHA1")
+                                                        alg: <CardText Value="@(req.Context.TotpAlgorithm ?? "SHA1")" />
                                                     </p>
                                                 </div>
                                             </details>
@@ -832,26 +879,37 @@
                                                 <span class="badge bg-info text-dark me-1">TOTP</span>Generate code
                                             </p>
                                             <p class="mb-1 text-muted small">
-                                                Alias: <code>@req.Context.TotpAlias</code>
+                                                Alias: <code><CardText Value="@(req.Context.TotpAlias)" /></code>
                                             </p>
-                                            <p class="mb-2 text-muted small">@req.Context.OperationDescription</p>
+                                            <p class="mb-2 text-muted small"><CardText Prose="true" Value="@req.Context.OperationDescription" /></p>
                                             break;
                                         case PendingRequestKind.SessionIssuance:
                                             <p class="mb-1 fw-semibold">
                                                 <span class="badge bg-success me-1">capability</span>Issue JWT
                                             </p>
                                             <p class="mb-1 text-muted small">
-                                                <code>@req.Service</code>/<code>@req.Secret</code> &rarr;
-                                                bearer <code>@(req.Context.SessionBearer ?? "?")</code>
+                                                <code><CardText Value="@(req.Service)" /></code>/<code><CardText Value="@(req.Secret)" /></code> &rarr;
+                                                bearer <code><CardText Value="@(req.Context.SessionBearer ?? "?")" /></code>
                                             </p>
-                                            <p class="mb-2 text-muted small">@req.Context.OperationDescription</p>
+                                            <p class="mb-2 text-muted small"><CardText Prose="true" Value="@req.Context.OperationDescription" /></p>
                                             <details class="rec-disclosure">
                                                 <summary>Audit details</summary>
                                                 <div class="rec-disclosure-body">
                                                     <p class="mb-0 text-muted small">
                                                         Lifetime: @((req.Context.SessionLifetimeSeconds ?? 0) / 3600)h,
                                                         max uses: @(req.Context.SessionMaxUses ?? 0),
-                                                        scope: @(req.Context.SessionScope is { Count: > 0 } s ? string.Join(", ", s) : "(none)")
+                                                        scope:
+                                                        @if (req.Context.SessionScope is { Count: > 0 } scopes)
+                                                        {
+                                                            foreach (var scope in scopes)
+                                                            {
+                                                                <code class="me-1"><CardText Value="@scope" /></code>
+                                                            }
+                                                        }
+                                                        else
+                                                        {
+                                                            <span>(none)</span>
+                                                        }
                                                     </p>
                                                 </div>
                                             </details>
@@ -861,12 +919,12 @@
                                                 <span class="badge bg-primary me-1">passkey</span>Sign in with Recto
                                             </p>
                                             <p class="mb-1 text-muted small">
-                                                Site: <code>@(req.Context.WebAuthnRpId ?? "?")</code>
+                                                Site: <code><CardText Value="@(req.Context.WebAuthnRpId ?? "?")" /></code>
                                             </p>
                                             <p class="mb-1 text-muted small">
-                                                Origin: <code>@(req.Context.WebAuthnOrigin ?? "?")</code>
+                                                Origin: <code><CardText Value="@(req.Context.WebAuthnOrigin ?? "?")" /></code>
                                             </p>
-                                            <p class="mb-2 text-muted small">@req.Context.OperationDescription</p>
+                                            <p class="mb-2 text-muted small"><CardText Prose="true" Value="@req.Context.OperationDescription" /></p>
                                             break;
                                         case PendingRequestKind.Pkcs11Sign:
                                             <p class="mb-1 fw-semibold">
@@ -875,15 +933,15 @@
                                             @if (!string.IsNullOrEmpty(req.Context.Pkcs11ConsumerLabel))
                                             {
                                                 <p class="mb-1 text-muted small">
-                                                    Consumer: <code>@req.Context.Pkcs11ConsumerLabel</code>
+                                                    Consumer: <code><CardText Value="@(req.Context.Pkcs11ConsumerLabel)" /></code>
                                                 </p>
                                             }
-                                            <p class="mb-2 text-muted small">@req.Context.OperationDescription</p>
+                                            <p class="mb-2 text-muted small"><CardText Prose="true" Value="@req.Context.OperationDescription" /></p>
                                             <details class="rec-disclosure">
                                                 <summary>Audit details</summary>
                                                 <div class="rec-disclosure-body">
                                                     <p class="mb-0 text-muted small">
-                                                        Hash: <code>@TruncateHash(req.Context.PayloadHashB64u ?? "")</code>
+                                                        Hash: <code><CardText Value="@(TruncateHash(req.Context.PayloadHashB64u ?? ""))" /></code>
                                                     </p>
                                                 </div>
                                             </details>
@@ -895,15 +953,15 @@
                                             @if (!string.IsNullOrEmpty(req.Context.PgpKeyLabel))
                                             {
                                                 <p class="mb-1 text-muted small">
-                                                    Key: <code>@req.Context.PgpKeyLabel</code>
+                                                    Key: <code><CardText Value="@(req.Context.PgpKeyLabel)" /></code>
                                                 </p>
                                             }
-                                            <p class="mb-2 text-muted small">@req.Context.OperationDescription</p>
+                                            <p class="mb-2 text-muted small"><CardText Prose="true" Value="@req.Context.OperationDescription" /></p>
                                             <details class="rec-disclosure">
                                                 <summary>Audit details</summary>
                                                 <div class="rec-disclosure-body">
                                                     <p class="mb-0 text-muted small">
-                                                        Hash: <code>@TruncateHash(req.Context.PayloadHashB64u ?? "")</code>
+                                                        Hash: <code><CardText Value="@(TruncateHash(req.Context.PayloadHashB64u ?? ""))" /></code>
                                                     </p>
                                                 </div>
                                             </details>
@@ -930,30 +988,30 @@
                                             @if (req.Context.BtcMessageKind == BtcMessageKind.MessageSigning && !string.IsNullOrEmpty(req.Context.BtcMessageText))
                                             {
                                                 <p class="mb-2 text-muted small" style="white-space: pre-wrap; word-break: break-word;">
-                                                    <strong>Message:</strong> @req.Context.BtcMessageText
+                                                    <strong>Message:</strong> <CardText Value="@req.Context.BtcMessageText" />
                                                 </p>
                                             }
                                             else if (req.Context.BtcMessageKind == BtcMessageKind.Psbt && !string.IsNullOrEmpty(req.Context.BtcPsbtBase64))
                                             {
                                                 <p class="mb-2 text-muted small" style="white-space: pre-wrap; word-break: break-word;">
-                                                    <strong>PSBT:</strong> <code>@TruncateHash(req.Context.BtcPsbtBase64)</code>
+                                                    <strong>PSBT:</strong> <code><CardText Value="@(TruncateHash(req.Context.BtcPsbtBase64))" /></code>
                                                 </p>
                                             }
                                             else
                                             {
-                                                <p class="mb-2 text-muted small">@req.Context.OperationDescription</p>
+                                                <p class="mb-2 text-muted small"><CardText Prose="true" Value="@req.Context.OperationDescription" /></p>
                                             }
                                             <details class="rec-disclosure">
                                                 <summary>Audit details</summary>
                                                 <div class="rec-disclosure-body">
                                                     <p class="mb-1 text-muted small">
-                                                        Coin: <code>@(_btcCoinDisplayName(btcCoin))</code>
+                                                        Coin: <code><CardText Value="@(_btcCoinDisplayName(btcCoin))" /></code>
                                                     </p>
                                                     <p class="mb-1 text-muted small">
-                                                        Network: <code>@(_btcNetworkLabel(req.Context.BtcNetwork))</code>
+                                                        Network: <code><CardText Value="@(_btcNetworkLabel(req.Context.BtcNetwork))" /></code>
                                                     </p>
                                                     <p class="mb-0 text-muted small">
-                                                        Path: <code>@(req.Context.BtcDerivationPath ?? _btcDefaultPathForCoin(btcCoin))</code>
+                                                        Path: <code><CardText Value="@(req.Context.BtcDerivationPath ?? _btcDefaultPathForCoin(btcCoin))" /></code>
                                                     </p>
                                                 </div>
                                             </details>
@@ -964,7 +1022,7 @@
                                             // path + derived address + message text.
                                             var edChain = req.Context.EdChain ?? EdChain.Solana;
                                             <p class="mb-1 fw-semibold">
-                                                <span class="rec-coin-badge @(_edChainBadgeClass(edChain))">@(_edChainTickerLabel(edChain))</span>@(_edMessageKindLabel(req.Context.EdMessageKind))
+                                                <span class="rec-coin-badge @(_edChainBadgeClass(edChain))">@(Recto.Shared.Capability.VisibleText.Of(_edChainTickerLabel(edChain)))</span>@(_edMessageKindLabel(req.Context.EdMessageKind))
                                             </p>
                                             @* Phase 3 — address + message stay visible; chain/path collapse. *@
                                             @if (_edAddressByRequestId.TryGetValue(req.RequestId, out var edDerivedAddr))
@@ -976,21 +1034,21 @@
                                             @if (req.Context.EdMessageKind == EdMessageKind.MessageSigning && !string.IsNullOrEmpty(req.Context.EdMessageText))
                                             {
                                                 <p class="mb-2 text-muted small" style="white-space: pre-wrap; word-break: break-word;">
-                                                    <strong>Message:</strong> @req.Context.EdMessageText
+                                                    <strong>Message:</strong> <CardText Value="@req.Context.EdMessageText" />
                                                 </p>
                                             }
                                             else
                                             {
-                                                <p class="mb-2 text-muted small">@req.Context.OperationDescription</p>
+                                                <p class="mb-2 text-muted small"><CardText Prose="true" Value="@req.Context.OperationDescription" /></p>
                                             }
                                             <details class="rec-disclosure">
                                                 <summary>Audit details</summary>
                                                 <div class="rec-disclosure-body">
                                                     <p class="mb-1 text-muted small">
-                                                        Chain: <code>@(_edChainDisplayName(edChain))</code>
+                                                        Chain: <code><CardText Value="@(_edChainDisplayName(edChain))" /></code>
                                                     </p>
                                                     <p class="mb-0 text-muted small">
-                                                        Path: <code>@(req.Context.EdDerivationPath ?? _edDefaultPathForChain(edChain))</code>
+                                                        Path: <code><CardText Value="@(req.Context.EdDerivationPath ?? _edDefaultPathForChain(edChain))" /></code>
                                                     </p>
                                                 </div>
                                             </details>
@@ -1015,30 +1073,30 @@
                                             @if (req.Context.EthMessageKind == EthMessageKind.PersonalSign && !string.IsNullOrEmpty(req.Context.EthMessageText))
                                             {
                                                 <p class="mb-2 text-muted small" style="white-space: pre-wrap; word-break: break-word;">
-                                                    <strong>Message:</strong> @req.Context.EthMessageText
+                                                    <strong>Message:</strong> <CardText Value="@req.Context.EthMessageText" />
                                                 </p>
                                             }
                                             else if (req.Context.EthMessageKind == EthMessageKind.TypedData && !string.IsNullOrEmpty(req.Context.EthTypedDataJson))
                                             {
                                                 var td = _ethTypedDataSummary(req.Context.EthTypedDataJson);
                                                 <p class="mb-1 text-muted small">
-                                                    <strong>Typed data (EIP-712):</strong> <code>@td.PrimaryType</code>
+                                                    <strong>Typed data (EIP-712):</strong> <code><CardText Value="@(td.PrimaryType)" /></code>
                                                 </p>
                                                 @if (!string.IsNullOrEmpty(td.DomainName))
                                                 {
                                                     <p class="mb-1 text-muted small">
-                                                        Domain: <code>@td.DomainName@(td.DomainVersion is null ? "" : $" v{td.DomainVersion}")</code>
+                                                        Domain: <code><CardText Value="@(td.DomainName + (td.DomainVersion is null ? "" : $" v{td.DomainVersion}"))" /></code>
                                                     </p>
                                                 }
                                                 @if (td.VerifyingContract is not null)
                                                 {
                                                     <p class="mb-1 text-muted small" style="word-break: break-all;">
-                                                        Contract: <code>@td.VerifyingContract</code>
+                                                        Contract: <code><CardText Value="@(td.VerifyingContract)" /></code>
                                                     </p>
                                                 }
                                                 <details class="mb-2">
                                                     <summary class="text-muted small">Show full message</summary>
-                                                    <pre class="text-muted small" style="white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto;">@req.Context.EthTypedDataJson</pre>
+                                                    <pre class="text-muted small" style="white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto;"><CardText Value="@req.Context.EthTypedDataJson" /></pre>
                                                 </details>
                                             }
                                             else if (req.Context.EthMessageKind == EthMessageKind.Transaction && !string.IsNullOrEmpty(req.Context.EthTransactionJson))
@@ -1047,7 +1105,7 @@
                                                 @if (!string.IsNullOrEmpty(tx.To))
                                                 {
                                                     <p class="mb-1 text-muted small" style="word-break: break-all;">
-                                                        To: <code>@tx.To</code>
+                                                        To: <code><CardText Value="@(tx.To)" /></code>
                                                     </p>
                                                 }
                                                 else
@@ -1059,44 +1117,44 @@
                                                 @if (!string.IsNullOrEmpty(tx.ValueDisplay))
                                                 {
                                                     <p class="mb-1 text-muted small">
-                                                        Value: <code>@tx.ValueDisplay</code>
+                                                        Value: <code><CardText Value="@(tx.ValueDisplay)" /></code>
                                                     </p>
                                                 }
                                                 @if (!string.IsNullOrEmpty(tx.GasDisplay))
                                                 {
                                                     <p class="mb-1 text-muted small">
-                                                        Gas: <code>@tx.GasDisplay</code>
+                                                        Gas: <code><CardText Value="@(tx.GasDisplay)" /></code>
                                                     </p>
                                                 }
                                                 @if (!string.IsNullOrEmpty(tx.MaxFeeDisplay))
                                                 {
                                                     <p class="mb-1 text-muted small">
-                                                        Max fee: <code>@tx.MaxFeeDisplay</code>
+                                                        Max fee: <code><CardText Value="@(tx.MaxFeeDisplay)" /></code>
                                                     </p>
                                                 }
                                                 @if (!string.IsNullOrEmpty(tx.DataPreview))
                                                 {
                                                     <p class="mb-1 text-muted small" style="word-break: break-all;">
-                                                        Data: <code>@tx.DataPreview</code>
+                                                        Data: <code><CardText Value="@(tx.DataPreview)" /></code>
                                                     </p>
                                                 }
                                                 <details class="mb-2">
                                                     <summary class="text-muted small">Show raw JSON</summary>
-                                                    <pre class="text-muted small" style="white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto;">@req.Context.EthTransactionJson</pre>
+                                                    <pre class="text-muted small" style="white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto;"><CardText Value="@req.Context.EthTransactionJson" /></pre>
                                                 </details>
                                             }
                                             else
                                             {
-                                                <p class="mb-2 text-muted small">@req.Context.OperationDescription</p>
+                                                <p class="mb-2 text-muted small"><CardText Prose="true" Value="@req.Context.OperationDescription" /></p>
                                             }
                                             <details class="rec-disclosure">
                                                 <summary>Audit details</summary>
                                                 <div class="rec-disclosure-body">
                                                     <p class="mb-1 text-muted small">
-                                                        Chain: <code>@(_ethChainLabel(req.Context.EthChainId))</code>
+                                                        Chain: <code><CardText Value="@(_ethChainLabel(req.Context.EthChainId))" /></code>
                                                     </p>
                                                     <p class="mb-0 text-muted small">
-                                                        Path: <code>@(req.Context.EthDerivationPath ?? "m/44'/60'/0'/0/0")</code>
+                                                        Path: <code><CardText Value="@(req.Context.EthDerivationPath ?? "m/44'/60'/0'/0/0")" /></code>
                                                     </p>
                                                 </div>
                                             </details>
@@ -1120,21 +1178,21 @@
                                             @if (req.Context.TronMessageKind == TronMessageKind.MessageSigning && !string.IsNullOrEmpty(req.Context.TronMessageText))
                                             {
                                                 <p class="mb-2 text-muted small" style="white-space: pre-wrap; word-break: break-word;">
-                                                    <strong>Message:</strong> @req.Context.TronMessageText
+                                                    <strong>Message:</strong> <CardText Value="@req.Context.TronMessageText" />
                                                 </p>
                                             }
                                             else
                                             {
-                                                <p class="mb-2 text-muted small">@req.Context.OperationDescription</p>
+                                                <p class="mb-2 text-muted small"><CardText Prose="true" Value="@req.Context.OperationDescription" /></p>
                                             }
                                             <details class="rec-disclosure">
                                                 <summary>Audit details</summary>
                                                 <div class="rec-disclosure-body">
                                                     <p class="mb-1 text-muted small">
-                                                        Network: <code>@(_tronNetworkLabel(req.Context.TronNetwork))</code>
+                                                        Network: <code><CardText Value="@(_tronNetworkLabel(req.Context.TronNetwork))" /></code>
                                                     </p>
                                                     <p class="mb-0 text-muted small">
-                                                        Path: <code>@(req.Context.TronDerivationPath ?? "m/44'/195'/0'/0/0")</code>
+                                                        Path: <code><CardText Value="@(req.Context.TronDerivationPath ?? "m/44'/195'/0'/0/0")" /></code>
                                                     </p>
                                                 </div>
                                             </details>
@@ -1149,7 +1207,7 @@
                                             // manifest is loaded; absent that, we still render the
                                             // raw groups list so the operator sees what's being
                                             // requested.
-                                            @if (_capabilityDecodedByRequestId.TryGetValue(req.RequestId, out var capDecoded))
+                                            @if (Cards.ViewOf(req.RequestId) is { } capDecoded)
                                             {
                                                 @* AUDIT DETAILS v2 (2026-08-13). LAW: sign-what-you-see —
                                                    every field in the signed section renders from the exact
@@ -1160,8 +1218,8 @@
                                                    labeled unsigned. Cross-check warnings render with
                                                    inline styling + role="alert" so no theme or CSS
                                                    override can suppress them. *@
-                                                <p class="mb-1 fw-semibold">
-                                                    <span class="rec-coin-badge rec-coin-badge-cap">CAP</span>@(capDecoded.PurposeShort)
+                                                <p class="mb-1 fw-semibold" style="word-break: break-word;">
+                                                    <span class="rec-coin-badge rec-coin-badge-cap">CAP</span><bdi dir="auto">@(Cards.PurposeShown(req.RequestId))</bdi>
                                                 </p>
                                                 @foreach (var warning in capDecoded.Warnings)
                                                 {
@@ -1208,17 +1266,17 @@
                                                                  aria-hidden="true">@actorMonogram</div>
                                                         }
                                                         <div style="min-width:0;">
-                                                            <div class="fw-semibold" style="line-height:1.2;">@actorVerdict.Name</div>
+                                                            <div class="fw-semibold" style="line-height:1.2;" dir="auto">@actorVerdict.Name</div>
                                                         </div>
                                                     </div>
                                                 }
                                                 <p class="mb-1 text-muted small" style="word-break: break-all;">
-                                                    Acting agent: <code>@capDecoded.ActingAgent</code>
+                                                    Acting agent: <code dir="auto">@capDecoded.ActingAgent</code>
                                                 </p>
                                                 @if (capDecoded.OnBehalfOfUser is not null)
                                                 {
                                                     <p class="mb-1 text-muted small" style="word-break: break-all;">
-                                                        On behalf of user: <code>@capDecoded.OnBehalfOfUser</code>
+                                                        On behalf of user: <code dir="auto">@capDecoded.OnBehalfOfUser</code>
                                                     </p>
                                                 }
                                                 @* AUDIENCE + PIN (2026-10-04): both are signed, and both were signed
@@ -1233,7 +1291,7 @@
                                                     {
                                                         foreach (var audItem in capDecoded.Audience)
                                                         {
-                                                            <code class="me-1">@audItem</code>
+                                                            <code class="me-1" dir="auto">@audItem</code>
                                                         }
                                                     }
                                                     else
@@ -1241,10 +1299,51 @@
                                                         <span>none named</span>
                                                     }
                                                 </p>
+                                                @* What the grant lets the agent do, at a glance: up to three actions, each on its own
+                                                   line, a long word broken rather than cut off. The rest are under Actions. *@
+                                                @if (capDecoded.GlanceActions.Count > 0)
+                                                {
+                                                    <div class="mb-1 text-muted small" style="overflow-wrap: anywhere;">
+                                                        @(capDecoded.AllowedCount == 1 ? "Action:" : "Actions:")
+                                                        @foreach (var glance in capDecoded.GlanceActions)
+                                                        {
+                                                            <div style="overflow-wrap: anywhere;"><code dir="auto">@glance</code></div>
+                                                        }
+                                                        @if (capDecoded.AllowedCount > capDecoded.GlanceActions.Count)
+                                                        {
+                                                            <div>and @(capDecoded.AllowedCount - capDecoded.GlanceActions.Count) more, listed under Actions</div>
+                                                        }
+                                                    </div>
+                                                }
+                                                @* One <code> per scope value, never a joined string; a list that limits nothing says so. *@
+                                                @foreach (var scopeRow in capDecoded.ScopeRows)
+                                                {
+                                                    <p class="mb-1 text-muted small" style="overflow-wrap: anywhere;">
+                                                        @scopeRow.Label:
+                                                        @if (scopeRow.Values.Count == 0)
+                                                        {
+                                                            <span>any</span>
+                                                        }
+                                                        else
+                                                        {
+                                                            foreach (var scopeValue in scopeRow.Values)
+                                                            {
+                                                                <code class="me-1" dir="auto">@scopeValue</code>
+                                                            }
+                                                        }
+                                                    </p>
+                                                }
+                                                @* The signed terms most grants do not carry (hard rule 15.x); nothing is drawn when there are none. *@
+                                                @foreach (var term in capDecoded.Terms)
+                                                {
+                                                    <p class="mb-1 small fw-semibold" style="word-break: break-word;">
+                                                        @term.Label: <code dir="auto">@term.Value</code>
+                                                    </p>
+                                                }
                                                 @if (capDecoded.PayloadPinShort is not null)
                                                 {
                                                     <p class="mb-1 text-muted small" style="word-break: break-all;">
-                                                        Pinned to payload: <code>@capDecoded.PayloadPinShort</code>
+                                                        Pinned to payload: <code dir="auto">@capDecoded.PayloadPinShort</code>
                                                     </p>
                                                 }
                                                 <p class="mb-1 text-muted small">
@@ -1252,7 +1351,7 @@
                                                 </p>
                                                 <p class="mb-1 text-muted small">
                                                     Validity: requested @capDecoded.RequestedAgo &middot; @capDecoded.TimeLeft
-                                                    (until <code>@capDecoded.ExpiresLocal</code>)
+                                                    (until <code dir="auto">@capDecoded.ExpiresLocal</code>)
                                                 </p>
                                                 <details class="mb-2">
                                                     <summary class="text-muted small">
@@ -1266,7 +1365,7 @@
                                                                 <ul class="mb-1">
                                                                     @foreach (var a in capDecoded.AllowedActions)
                                                                     {
-                                                                        <li><code>@a</code></li>
+                                                                        <li style="overflow-wrap: anywhere;"><code dir="auto">@a</code></li>
                                                                     }
                                                                 </ul>
                                                             </div>
@@ -1278,7 +1377,7 @@
                                                                 <ul class="mb-1">
                                                                     @foreach (var a in capDecoded.DeniedActions)
                                                                     {
-                                                                        <li><code>@a</code></li>
+                                                                        <li style="overflow-wrap: anywhere;"><code dir="auto">@a</code></li>
                                                                     }
                                                                 </ul>
                                                             </div>
@@ -1290,7 +1389,7 @@
                                                                 <ul class="mb-0">
                                                                     @foreach (var g in capDecoded.Groups)
                                                                     {
-                                                                        <li><code>@g</code></li>
+                                                                        <li style="overflow-wrap: anywhere;"><code dir="auto">@g</code></li>
                                                                     }
                                                                 </ul>
                                                             </div>
@@ -1300,29 +1399,20 @@
                                                 <details class="rec-disclosure">
                                                     <summary>Audit details</summary>
                                                     <div class="rec-disclosure-body">
-                                                        @if (capDecoded.ScopeServices.Count > 0 || capDecoded.ScopeRepos.Count > 0 || capDecoded.ScopeEnv.Count > 0)
-                                                        {
-                                                            <p class="mb-1 text-muted small">
-                                                                Scope:
-                                                                @if (capDecoded.ScopeServices.Count > 0) {<span> services <code>@string.Join(", ", capDecoded.ScopeServices)</code></span>}
-                                                                @if (capDecoded.ScopeRepos.Count > 0) {<span> &middot; repos <code>@string.Join(", ", capDecoded.ScopeRepos)</code></span>}
-                                                                @if (capDecoded.ScopeEnv.Count > 0) {<span> &middot; env <code>@string.Join(", ", capDecoded.ScopeEnv)</code></span>}
-                                                            </p>
-                                                        }
                                                         <p class="mb-1 text-muted small" style="word-break: break-all;">
-                                                            You will issue as: <code>@capDecoded.WillIssueAs</code>
+                                                            You will issue as: <code dir="auto">@capDecoded.WillIssueAs</code>
                                                         </p>
                                                         <p class="mb-1 text-muted small" style="word-break: break-all;">
-                                                            Request id@(capDecoded.SingleUse ? " (single-use)" : ""): <code>@capDecoded.Jti</code>
+                                                            Request id@(capDecoded.SingleUse ? " (single-use)" : ""): <code dir="auto">@capDecoded.Jti</code>
                                                         </p>
                                                         @if (capDecoded.PayloadPin is not null)
                                                         {
                                                             <p class="mb-1 text-muted small" style="word-break: break-all;">
-                                                                Payload pin (sha256): <code>@capDecoded.PayloadPin</code>
+                                                                Payload pin (sha256): <code dir="auto">@capDecoded.PayloadPin</code>
                                                             </p>
                                                         }
                                                         <p class="mb-0 text-muted small">
-                                                            Registry: <code>@capDecoded.RegistryVersion</code>
+                                                            Registry: <code dir="auto">@capDecoded.RegistryVersion</code>
                                                         </p>
                                                     </div>
                                                 </details>
@@ -1335,39 +1425,38 @@
                                                         Delivered by:
                                                         @if (!string.IsNullOrEmpty(req.Context.CapAgentId))
                                                         {
-                                                            <code>@req.Context.CapAgentId</code>
+                                                            <code><CardText Value="@(req.Context.CapAgentId)" /></code>
                                                         }
                                                         @if (req.Context.AppContext is not null)
                                                         {
-                                                            <span> &middot; @req.Context.AppContext.AppName</span>
+                                                            <span> &middot; <CardText Value="@req.Context.AppContext.AppName" /></span>
                                                             @if (!string.IsNullOrEmpty(req.Context.AppContext.AppUrl))
                                                             {
-                                                                <span> (<code>@req.Context.AppContext.AppUrl</code>)</span>
+                                                                <span> (<code><CardText Value="@(req.Context.AppContext.AppUrl)" /></code>)</span>
                                                             }
                                                         }
                                                     </p>
                                                     @if (actorVerdict.Show)
                                                     {
                                                         <p class="mb-0 text-muted small" style="word-break: break-word;">
-                                                            Names the agent: @actorVerdict.Name
+                                                            Names the agent: <bdi dir="auto">@actorVerdict.Name</bdi>
                                                         </p>
                                                     }
                                                 </div>
                                             }
-                                            else if (!string.IsNullOrEmpty(_capabilityDecodeErrorByRequestId.GetValueOrDefault(req.RequestId)))
+                                            else if (Cards.RefusalOf(req.RequestId) is not null)
                                             {
                                                 <p class="mb-1 fw-semibold text-danger">
-                                                    <span class="rec-coin-badge rec-coin-badge-cap">CAP</span> capability_request (decode failed)
+                                                    <span class="rec-coin-badge rec-coin-badge-cap">CAP</span> capability_request (cannot be shown)
                                                 </p>
-                                                <p class="mb-2 text-muted small">@(_capabilityDecodeErrorByRequestId[req.RequestId])</p>
-                                                <p class="mb-2 text-muted small">@req.Context.OperationDescription</p>
+                                                <p class="mb-2 text-muted small"><CardText Prose="true" Value="@req.Context.OperationDescription" /></p>
                                             }
                                             else
                                             {
                                                 <p class="mb-1 fw-semibold">
                                                     <span class="rec-coin-badge rec-coin-badge-cap">CAP</span> capability_request
                                                 </p>
-                                                <p class="mb-2 text-muted small">@req.Context.OperationDescription</p>
+                                                <p class="mb-2 text-muted small"><CardText Prose="true" Value="@req.Context.OperationDescription" /></p>
                                             }
                                             break;
                                         case PendingRequestKind.ProfileCreate:
@@ -1390,10 +1479,10 @@
                                                 Mint child profile
                                             </p>
                                             <p class="mb-1 text-muted small">
-                                                Kind: <code>@req.Context.CandidateKind</code>
+                                                Kind: <code><CardText Value="@(req.Context.CandidateKind)" /></code>
                                             </p>
                                             <p class="mb-2 text-muted small">
-                                                Display name: <strong>@req.Context.CandidateDisplayName</strong>
+                                                Display name: <strong><CardText Value="@(req.Context.CandidateDisplayName)" /></strong>
                                             </p>
                                             <details class="rec-disclosure">
                                                 <summary>Audit details</summary>
@@ -1410,25 +1499,25 @@
                                                     @if (!string.IsNullOrEmpty(req.Context.CandidateThemeHint))
                                                     {
                                                         <p class="mb-1 text-muted small">
-                                                            Theme hint: <code>@req.Context.CandidateThemeHint</code>
+                                                            Theme hint: <code><CardText Value="@(req.Context.CandidateThemeHint)" /></code>
                                                         </p>
                                                     }
                                                     @if (!string.IsNullOrEmpty(req.Context.CandidateScimProvider))
                                                     {
                                                         <p class="mb-1 text-muted small">
-                                                            SCIM provider: <code>@req.Context.CandidateScimProvider</code>
+                                                            SCIM provider: <code><CardText Value="@(req.Context.CandidateScimProvider)" /></code>
                                                         </p>
                                                     }
                                                     @if (!string.IsNullOrEmpty(req.Context.CandidateProfileId))
                                                     {
                                                         <p class="mb-1 text-muted small" style="word-break: break-all;">
-                                                            Profile id (caller-authored): <code>@req.Context.CandidateProfileId</code>
+                                                            Profile id (caller-authored): <code><CardText Value="@(req.Context.CandidateProfileId)" /></code>
                                                         </p>
                                                     }
                                                     @if (!string.IsNullOrEmpty(req.Context.CapAgentId))
                                                     {
                                                         <p class="mb-0 text-muted small">
-                                                            Requesting agent: <code>@req.Context.CapAgentId</code>
+                                                            Requesting agent: <code><CardText Value="@(req.Context.CapAgentId)" /></code>
                                                         </p>
                                                     }
                                                 </div>
@@ -1445,16 +1534,16 @@
                                                 Revoke device from profile
                                             </p>
                                             <p class="mb-1 text-muted small" style="word-break: break-all;">
-                                                Target profile: <code>@req.Context.RevdevProfileId</code>
+                                                Target profile: <code><CardText Value="@(req.Context.RevdevProfileId)" /></code>
                                             </p>
                                             @if (!string.IsNullOrEmpty(req.Context.RevdevRevokerLabel))
                                             {
                                                 <p class="mb-1 text-muted small">
-                                                    Approving as: <strong>@req.Context.RevdevRevokerLabel</strong>
+                                                    Approving as: <strong><CardText Value="@(req.Context.RevdevRevokerLabel)" /></strong>
                                                 </p>
                                             }
                                             <p class="mb-1 text-muted small" style="word-break: break-all;">
-                                                Removing phone id: <code>@req.Context.RevdevPhoneIdToRevoke</code>
+                                                Removing phone id: <code><CardText Value="@(req.Context.RevdevPhoneIdToRevoke)" /></code>
                                             </p>
                                             <p class="mb-2 text-muted small">
                                                 Approving REMOVES the named device from
@@ -1473,7 +1562,7 @@
                                                     <summary>Audit details</summary>
                                                     <div class="rec-disclosure-body">
                                                         <p class="mb-0 text-muted small">
-                                                            Requesting agent: <code>@req.Context.CapAgentId</code>
+                                                            Requesting agent: <code><CardText Value="@(req.Context.CapAgentId)" /></code>
                                                         </p>
                                                     </div>
                                                 </details>
@@ -1490,16 +1579,16 @@
                                                 Add device to profile
                                             </p>
                                             <p class="mb-1 text-muted small" style="word-break: break-all;">
-                                                Target profile: <code>@req.Context.AddevProfileId</code>
+                                                Target profile: <code><CardText Value="@(req.Context.AddevProfileId)" /></code>
                                             </p>
                                             @if (!string.IsNullOrEmpty(req.Context.AddevNewPhoneLabel))
                                             {
                                                 <p class="mb-1 text-muted small">
-                                                    New device: <strong>@req.Context.AddevNewPhoneLabel</strong>
+                                                    New device: <strong><CardText Value="@(req.Context.AddevNewPhoneLabel)" /></strong>
                                                 </p>
                                             }
                                             <p class="mb-1 text-muted small" style="word-break: break-all;">
-                                                New phone id: <code>@req.Context.AddevNewPhoneId</code>
+                                                New phone id: <code><CardText Value="@(req.Context.AddevNewPhoneId)" /></code>
                                             </p>
                                             <p class="mb-2 text-muted small">
                                                 Approving authorizes the named device to
@@ -1515,15 +1604,15 @@
                                                     <summary>Audit details</summary>
                                                     <div class="rec-disclosure-body">
                                                         <p class="mb-0 text-muted small">
-                                                            Requesting agent: <code>@req.Context.CapAgentId</code>
+                                                            Requesting agent: <code><CardText Value="@(req.Context.CapAgentId)" /></code>
                                                         </p>
                                                     </div>
                                                 </details>
                                             }
                                             break;
                                         default:
-                                            <p class="mb-1 fw-semibold">Unknown request kind: <code>@req.Kind</code></p>
-                                            <p class="mb-2 text-muted small">@req.Context.OperationDescription</p>
+                                            <p class="mb-1 fw-semibold">Unknown request kind: <code><CardText Value="@(req.Kind)" /></code></p>
+                                            <p class="mb-2 text-muted small"><CardText Prose="true" Value="@req.Context.OperationDescription" /></p>
                                             break;
                                     }
 
@@ -1559,11 +1648,39 @@
                                             now; a fresh card is on its way from the bridge - nothing to tap here.
                                         </div>
                                     }
+                                    else if (Cards.Judge(req) is { Block: Recto.Shared.Capability.CardBlock.Refused } judged)
+                                    {
+                                        @* Hard rule 15.x: a card that cannot be shown whole - or that changed under its id -
+                                           takes a Deny only. *@
+                                        <div class="alert alert-warning small text-start mb-2" role="alert">@judged.Text</div>
+                                        @renderDeny(req)
+                                    }
                                     else
                                     {
-                                        <div class="rec-btn-row">
+                                        // Hard rule 15.x: the whole purpose is signed, so the whole purpose is read. A purpose
+                                        // that fits the card at a glance has one part and neither the line nor the button.
+                                        // Read on stays where it is after the last part, so what was focused is still there
+                                        // and nothing moves under the finger.
+                                        var parts = Cards.PartsOf(req.RequestId);
+                                        var unread = Cards.PartsLeft(req.RequestId) > 0;
+                                        var progressId = "rec-progress-" + req.RequestId;
+                                        var readOnId = "rec-read-on-" + req.RequestId;
+                                        @if (parts > 1)
+                                        {
+                                            <p id="@progressId" class="mb-0 small text-muted" role="status" aria-live="polite">@Cards.ProgressOf(req.RequestId)</p>
+                                        }
+                                        <div class="rec-btn-row" style="flex-wrap: wrap;">
+                                            @if (parts > 1)
+                                            {
+                                                <button type="button" id="@readOnId" class="rec-btn rec-btn-ghost"
+                                                        aria-disabled="@(unread ? "false" : "true")"
+                                                        @onclick="() => ReadOn(req)">
+                                                    @(unread ? "Read on" : "All read")
+                                                </button>
+                                            }
                                             <button class="rec-btn rec-btn-approve"
-                                                    disabled="@(!string.IsNullOrEmpty(_processingRequestId))"
+                                                    aria-describedby="@(parts > 1 ? readOnId + " " + progressId : null)"
+                                                    disabled="@(!string.IsNullOrEmpty(_processingRequestId) || Cards.Judge(req).Block != Recto.Shared.Capability.CardBlock.None)"
                                                     @onclick="() => HandleApproveAsync(req)">
                                                 Approve
                                             </button>
@@ -1588,9 +1705,12 @@
                                     <span class="rec-section-title">Identity &amp; Access</span>
                                     <span class="rec-section-count">@identityReqs.Count</span>
                                 </div>
-                                @foreach (var req in identityReqs)
+                                @foreach (var card in Recto.Shared.Capability.CapabilityCardDesk.Keyed(identityReqs))
                                 {
-                                    @renderCard(req)
+                                    <CardBoundary @key="card.Key">
+                                        <ChildContent>@renderCard(card.Request)</ChildContent>
+                                        <ErrorContent>@renderRefused(card.Request)</ErrorContent>
+                                    </CardBoundary>
                                 }
                             </section>
                         }
@@ -1603,9 +1723,12 @@
                                     <span class="rec-section-title">Crypto Tokens</span>
                                     <span class="rec-section-count">@tokenReqs.Count</span>
                                 </div>
-                                @foreach (var req in tokenReqs)
+                                @foreach (var card in Recto.Shared.Capability.CapabilityCardDesk.Keyed(tokenReqs))
                                 {
-                                    @renderCard(req)
+                                    <CardBoundary @key="card.Key">
+                                        <ChildContent>@renderCard(card.Request)</ChildContent>
+                                        <ErrorContent>@renderRefused(card.Request)</ErrorContent>
+                                    </CardBoundary>
                                 }
                             </section>
                         }
@@ -2250,17 +2373,12 @@
     // base58check addresses for pending tron_sign requests, keyed
     // by request_id.
     private Dictionary<string, string> _tronAddressByRequestId = new();
-    // Phase 5 Wave B: decoded CapabilityClaims for pending
-    // capability_request entries, keyed by request_id. The render arm
-    // pulls structured fields off this view-model rather than
-    // re-decoding cap_payload_b64 inline. Populated by
-    // PopulateCapabilityDecodesAsync at every RefreshPendingAsync;
-    // cleared when _pending is replaced. Decode failures stash a
-    // friendly error string in _capabilityDecodeErrorByRequestId so
-    // the operator sees what went wrong (rather than rendering an
-    // empty card with no signal).
-    private Dictionary<string, Recto.Shared.Capability.CapabilityAuditView> _capabilityDecodedByRequestId = new();
-    private Dictionary<string, string> _capabilityDecodeErrorByRequestId = new();
+    // The capability cards on the queue: each one's view, how much of its
+    // signed purpose has been shown, and whether it may be approved. Loaded at
+    // every RefreshPendingAsync; the render arm reads fields off its views
+    // rather than re-decoding cap_payload_b64 inline.
+    private Recto.Shared.Capability.CapabilityCardDesk? _cards;
+    private Recto.Shared.Capability.CapabilityCardDesk Cards => _cards ??= new(SeenCards);
     private string? _processingRequestId;
     private string _processingText = string.Empty;
     // THE ERROR OUTLIVES ITS PANEL (2026-09-21): every message set here is also kept in RecentErrors (Settings shows
@@ -2272,7 +2390,52 @@
     private string? _pollingError
     {
         get => _pollingErrorValue;
-        set { _pollingErrorValue = value; RecentErrors.Record(_errorPhase, value); }
+        set
+        {
+            _pollingErrorValue = value;
+            RecentErrors.Record(_errorPhase, value);
+        }
+    }
+
+    private bool TotpFresh => _lastTotpAt is not null
+        && (DateTimeOffset.UtcNow - _lastTotpAt.Value).TotalSeconds < 30
+        && _lastTotpCode is not null;
+
+    // What the panels above the cards say, as drawn: as one comes, goes or changes its words, every card moves. Asked as
+    // the page is drawn, above the cards. The code's countdown is one line of one length and moves nothing.
+    private (string? Totp, string? Title, string? Identity, string? Polling) _panelsDrawn;
+
+    private void HoldAsPanelsMove(bool totp)
+    {
+        static string? Said(string? text) => string.IsNullOrEmpty(text) ? null : text;
+        var panels = (totp ? $"{_lastTotpAlias}/{_lastTotpCode}/{_totpCopied}" : null,
+            Said(_identityError) is null ? null : $"{_identityErrorTitle}/{_reverifying}", Said(_identityError),
+            Said(_pollingError) is { } polling ? $"{polling}/{_retrying}" : null);
+        if (panels == _panelsDrawn) return;
+        _panelsDrawn = panels;
+        Cards.HoldFrom();
+        _ = RenderWhenHoldEndsAsync();
+    }
+
+    private void ReadOn(PendingRequest req)
+    {
+        Cards.ReadOn(req.RequestId);
+        _ = RenderWhenHoldEndsAsync();
+    }
+
+    // A card that came to its place a moment ago is drawn without its Approve; this draws it with one.
+    private async Task RenderWhenHoldEndsAsync()
+    {
+        await Task.Delay(Recto.Shared.Capability.CapabilityCardDesk.HoldMilliseconds + 50);
+        if (_disposed) return;
+        try
+        {
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (ObjectDisposedException)
+        {
+            // The page went away meanwhile.
+        }
     }
     private bool _retrying;
     private CancellationTokenSource? _pollCts;
@@ -2371,6 +2534,10 @@
     private string _pairServiceBusyText = string.Empty;
     private string? _pairServiceError;
     private string? _pairServiceSuccessMessage;
+    // The fingerprint of the key being paired, in the form the consumer's page shows it.
+    private string? _pairServiceFingerprint;
+    // Opens the panel once a pairing starts, so its fingerprint is in view even when a scan started it.
+    private bool _pairServiceOpen;
     // The pairing refused because a phrase this phone once held reads empty: the
     // error offers a restore in Settings or a new phrase.
     private bool _pairServicePhraseUnreadable;
@@ -2905,7 +3072,7 @@
             // key; the service's Failed status covers that — Start fresh
             // stays best-effort.)
             var wipe = await Unpair.UnpairAllAsync(KeyAlias, CancellationToken.None);
-            if (wipe.Status == UnpairAllStatus.RefusedGenesisMember)
+            if (wipe.Status is UnpairAllStatus.RefusedGenesisMember or UnpairAllStatus.RefusedRecoveryPhrase)
             {
                 _errorMessage = wipe.Message;
                 return;
@@ -3560,6 +3727,7 @@
             return;
         }
         _pairServiceError = null;
+        _pairServiceFingerprint = null;
         _pairServicePhraseUnreadable = false;
         _pairServiceBusy = true;
         _pairServiceBusyText = "Deriving master pubkey...";
@@ -3610,6 +3778,10 @@
                 _pairServiceError = $"Master pubkey has wrong length ({masterPubkeyHex.Length} hex chars); expected 128.";
                 return;
             }
+            // Shown from here on: the person compares it with the page that asked, which
+            // shows the fingerprint of the key it was handed.
+            _pairServiceFingerprint = Recto.Shared.Capability.KeyFingerprint.Of(pubkeyResult.Value);
+            _pairServiceOpen = true;
 
             // 2) The pairing record: what the phone signs is the whole act, not the
             //    code. The consumer's QR carried subject + not_after; the bootloader
@@ -3798,6 +3970,7 @@
     private void DismissPairServiceSuccess()
     {
         _pairServiceSuccessMessage = null;
+        _pairServiceFingerprint = null;
         _pairServiceHighlightedAppId = null;
         _pairServiceError = null;
         StateHasChanged();
@@ -3864,7 +4037,7 @@
     private string? CapabilityWindowClosed(PendingRequest req)
     {
         if (req.Kind != PendingRequestKind.CapabilityRequest) return null;
-        if (!_capabilityDecodedByRequestId.TryGetValue(req.RequestId, out var cap)) return null;
+        if (Cards.ViewOf(req.RequestId) is not { } cap) return null;
         return cap.Exp <= DateTimeOffset.UtcNow.ToUnixTimeSeconds() ? cap.ExpiresLocal : null;
     }
 
@@ -3877,6 +4050,17 @@
         {
             _errorPhase = "approve/window";
             _pollingError = $"This card's window closed at {closedAt}; nothing was sent. The bridge re-cards on its next sweep.";
+            _errorPhase = "poll";
+            StateHasChanged();
+            return;
+        }
+        // The card is judged again at the tap, as it was rendered, before the enclave is asked (hard rule 15.x).
+        if (Cards.Judge(req) is { Block: not Recto.Shared.Capability.CardBlock.None } judged)
+        {
+            // A tap as the card came to where it stands was meant for what stood there.
+            if (judged.Block == Recto.Shared.Capability.CardBlock.Held) return;
+            _errorPhase = "approve/card";
+            _pollingError = judged.Text;
             _errorPhase = "poll";
             StateHasChanged();
             return;
@@ -5162,15 +5346,9 @@
                 StateHasChanged();
                 return;
             }
-            var respondReq = new RespondRequest(
-                PhoneId: _paired.PhoneId,
-                Decision: RespondDecision.Denied,
-                Reason: "operator declined");
-            var respondResult = await BootloaderClient.RespondAsync(
-                ActiveBootloaderUrl, req.RequestId, respondReq, CancellationToken.None);
-            if (respondResult.IsFailure)
+            if (await SendDenialAsync(req) is { } error)
             {
-                _pollingError = respondResult.Error.Message;
+                _pollingError = error.Message;
                 return;
             }
             await RefreshPendingAsync(CancellationToken.None);
@@ -5181,6 +5359,25 @@
             _processingText = string.Empty;
             StateHasChanged();
         }
+    }
+
+    // A denial goes to the queue the card waits on: the user vault's own for its kinds, the others' for the rest. A card
+    // whose kind could not be read is denied on the one and then, when it is not waiting there, on the other.
+    private async Task<Error?> SendDenialAsync(PendingRequest req)
+    {
+        var kind = req.Kind == PendingRequestKind.Unreadable ? req.NamedKind : req.Kind;
+        Error? error = null;
+        if (string.IsNullOrEmpty(kind) || !Recto.Shared.Capability.UserVaultCardModel.IsUserVaultKind(kind))
+        {
+            var denied = await BootloaderClient.RespondAsync(ActiveBootloaderUrl, req.RequestId,
+                new RespondRequest(PhoneId: _paired!.PhoneId, Decision: RespondDecision.Denied, Reason: "operator declined"),
+                CancellationToken.None);
+            error = denied.IsFailure ? denied.Error : null;
+            if (error is null || !string.IsNullOrEmpty(kind)) return error;
+        }
+        var refused = await BootloaderClient.DenyUserVaultGrantRequestAsync(
+            ActiveBootloaderUrl, _paired!.PhoneId, req.RequestId, CancellationToken.None);
+        return refused.IsFailure ? error ?? refused.Error : null;
     }
 
     // --- Round 7 phone management ---
@@ -5597,19 +5794,19 @@
                 if (closedNow != _closedCardsRendered)
                 {
                     _closedCardsRendered = closedNow;
+                    Cards.HoldFrom();   // a closed card is drawn smaller: the ones below it move
+                    _ = RenderWhenHoldEndsAsync();
                     await InvokeAsync(StateHasChanged);
                 }
                 return;
             }
             _closedCardsRendered = string.Empty;
-            _lastPendingFingerprint = wireFingerprint;
-            _pending = result.Value.Requests.ToList();
-            _pollingError = null;
-            await PopulateEthAddressesAsync(_pending, ct);
-            await PopulateBtcAddressesAsync(_pending, ct);
-            await PopulateEdAddressesAsync(_pending, ct);
-            await PopulateTronAddressesAsync(_pending, ct);
-            PopulateCapabilityDecodes(_pending);
+            // In the order the sections draw them: a card's place is where a person finds it.
+            var arrived = result.Value.Requests.OrderBy(r => IsTokenSigningKind(r.Kind)).ToList();
+            await PopulateEthAddressesAsync(arrived, ct);
+            await PopulateBtcAddressesAsync(arrived, ct);
+            await PopulateEdAddressesAsync(arrived, ct);
+            await PopulateTronAddressesAsync(arrived, ct);
 
             // v1 vault home (banked 2026-05-18): every observed request
             // upserts the Connected Services registry. AppContext is the
@@ -5618,14 +5815,36 @@
             // (registry impl is SecureStorage-backed and uses a SemaphoreSlim
             // for concurrency, so back-to-back upserts are safe but not
             // strictly parallel — sequential keeps the code simple).
-            foreach (var req in _pending)
+            foreach (var req in arrived)
             {
-                await Registry.RecordObservedAsync(req.Context.AppContext, ct);
+                try
+                {
+                    await Registry.RecordObservedAsync(req.Context.AppContext, ct);
+                }
+                catch (Exception) when (!ct.IsCancellationRequested)
+                {
+                    // One card's app is not listed; the cards are drawn all the same.
+                }
             }
-            var servicesResult = await Registry.GetAllAsync(ct);
-            _connectedServices = servicesResult.IsSuccess
-                ? servicesResult.Value
-                : Array.Empty<ConnectedService>();
+            try
+            {
+                var servicesResult = await Registry.GetAllAsync(ct);
+                _connectedServices = servicesResult.IsSuccess
+                    ? servicesResult.Value
+                    : Array.Empty<ConnectedService>();
+            }
+            catch (Exception) when (!ct.IsCancellationRequested)
+            {
+                // The services listed before stand; the cards are drawn all the same.
+            }
+
+            // Read last, with nothing awaited before it is drawn: a card's hold begins as a person first sees it.
+            Cards.Load(arrived, DateTimeOffset.UtcNow);
+            _pending = arrived;
+            // Remembered as acted on only now: a queue that was not read is read again at the next poll.
+            _lastPendingFingerprint = wireFingerprint;
+            _pollingError = null;
+            _ = RenderWhenHoldEndsAsync();
         }
         else
         {
@@ -5651,10 +5870,17 @@
                 ? "m/44'/60'/0'/0/0"
                 : req.Context.EthDerivationPath!;
             // A read, never a provision: a phone with no readable phrase shows no address.
-            var account = await EthSigner.GetAccountAsync(EthKeyAlias, path, ct);
-            if (account.IsSuccess)
+            try
             {
-                newMap[req.RequestId] = account.Value.Address;
+                var account = await EthSigner.GetAccountAsync(EthKeyAlias, path, ct);
+                if (account.IsSuccess)
+                {
+                    newMap[req.RequestId] = account.Value.Address;
+                }
+            }
+            catch (Exception) when (!ct.IsCancellationRequested)
+            {
+                // This card is drawn without an address, and the others with theirs.
             }
         }
         _ethAddressByRequestId = newMap;
@@ -5682,10 +5908,17 @@
             var network = string.IsNullOrEmpty(req.Context.BtcNetwork)
                 ? "mainnet"
                 : req.Context.BtcNetwork!;
-            var account = await BtcSigner.GetAccountAsync(BtcKeyAlias, path, network, coin, ct);
-            if (account.IsSuccess)
+            try
             {
-                newMap[req.RequestId] = account.Value.Address;
+                var account = await BtcSigner.GetAccountAsync(BtcKeyAlias, path, network, coin, ct);
+                if (account.IsSuccess)
+                {
+                    newMap[req.RequestId] = account.Value.Address;
+                }
+            }
+            catch (Exception) when (!ct.IsCancellationRequested)
+            {
+                // This card is drawn without an address, and the others with theirs.
             }
         }
         _btcAddressByRequestId = newMap;
@@ -5710,10 +5943,17 @@
             var path = string.IsNullOrEmpty(req.Context.EdDerivationPath)
                 ? _edDefaultPathForChain(chain)
                 : req.Context.EdDerivationPath!;
-            var account = await EdSigner.GetAccountAsync(EdKeyAlias, chain, path, ct);
-            if (account.IsSuccess)
+            try
             {
-                newMap[req.RequestId] = account.Value.Address;
+                var account = await EdSigner.GetAccountAsync(EdKeyAlias, chain, path, ct);
+                if (account.IsSuccess)
+                {
+                    newMap[req.RequestId] = account.Value.Address;
+                }
+            }
+            catch (Exception) when (!ct.IsCancellationRequested)
+            {
+                // This card is drawn without an address, and the others with theirs.
             }
         }
         _edAddressByRequestId = newMap;
@@ -5735,66 +5975,21 @@
             var path = string.IsNullOrEmpty(req.Context.TronDerivationPath)
                 ? "m/44'/195'/0'/0/0"
                 : req.Context.TronDerivationPath!;
-            var account = await TronSigner.GetAccountAsync(TronKeyAlias, path, ct);
-            if (account.IsSuccess)
+            try
             {
-                newMap[req.RequestId] = account.Value.Address;
+                var account = await TronSigner.GetAccountAsync(TronKeyAlias, path, ct);
+                if (account.IsSuccess)
+                {
+                    newMap[req.RequestId] = account.Value.Address;
+                }
+            }
+            catch (Exception) when (!ct.IsCancellationRequested)
+            {
+                // This card is drawn without an address, and the others with theirs.
             }
         }
         _tronAddressByRequestId = newMap;
     }
-
-    /// <summary>
-    /// Phase 5 Wave B part 2: decode CapabilityClaims for every
-    /// pending capability_request so the render arm can show the
-    /// structured-list approval UI without doing decoding inline.
-    /// Synchronous (no enclave / network calls; just base64url-decode
-    /// + System.Text.Json parse + claims projection). Decode failures
-    /// stash a friendly error string in
-    /// <see cref="_capabilityDecodeErrorByRequestId"/> so the operator
-    /// sees what went wrong rather than rendering an empty card.
-    /// </summary>
-    private void PopulateCapabilityDecodes(List<PendingRequest> pending)
-    {
-        var decoded = new Dictionary<string, Recto.Shared.Capability.CapabilityAuditView>();
-        var errors = new Dictionary<string, string>();
-        foreach (var req in pending)
-        {
-            if (req.Kind != PendingRequestKind.CapabilityRequest) continue;
-            if (string.IsNullOrEmpty(req.Context.CapPayloadB64))
-            {
-                errors[req.RequestId] = "capability_request missing cap_payload_b64";
-                continue;
-            }
-            try
-            {
-                var pad = (4 - (req.Context.CapPayloadB64!.Length % 4)) % 4;
-                var paddedB64 = req.Context.CapPayloadB64
-                    .Replace('-', '+').Replace('_', '/')
-                    + new string('=', pad);
-                var payloadBytes = System.Convert.FromBase64String(paddedB64);
-                using var doc = System.Text.Json.JsonDocument.Parse(payloadBytes);
-                var claims = Recto.Shared.Capability.CapabilityJws.PayloadToClaims(doc.RootElement);
-                // AUDIT DETAILS v2 (2026-08-13): the view-model is
-                // computed from the SIGNED payload bytes only
-                // (sign-what-you-see); transport facts render from
-                // req.Context in a separate, unsigned-labeled section.
-                decoded[req.RequestId] = Recto.Shared.Capability.CapabilityAuditView.From(claims);
-            }
-            catch (Exception ex)
-            {
-                errors[req.RequestId] = $"Decode failed: {ex.GetType().Name}: {ex.Message}";
-            }
-        }
-        _capabilityDecodedByRequestId = decoded;
-        _capabilityDecodeErrorByRequestId = errors;
-    }
-
-    // AUDIT DETAILS v2 (2026-08-13): the capability card's view-model
-    // moved to Recto.Shared.Capability.CapabilityAuditView so its
-    // parsing / cross-check logic is unit-testable outside a Blazor
-    // render harness. The page-private CapabilityRequestView records
-    // it replaced lived here.
 
     private async Task HandleRetryPollAsync()
     {

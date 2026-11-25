@@ -213,7 +213,9 @@
         <div class="card-body">
             <p class="text-muted small mb-3">
                 Wipes every paired bootloader, every TOTP secret, and the
-                phone-side enclave key. After this, you'll need to re-pair
+                phone-side enclave key. If this phone holds a recovery
+                phrase it asks once more before erasing that too. After
+                this, you'll need to re-pair
                 from scratch with each bootloader. The bootloader-side
                 phone entries become orphaned; revoke them from another
                 paired phone or via the bootloader's operator UI.
@@ -237,7 +239,7 @@
                 <div class="d-flex gap-2">
                     <button class="btn btn-danger"
                             disabled="@_unpairing"
-                            @onclick="UnpairAllAsync">
+                            @onclick="@(() => UnpairAllAsync(eraseRecoveryPhrase: false))">
                         @(_unpairing ? "Wiping..." : "Yes, wipe everything")
                     </button>
                     <button class="btn btn-secondary"
@@ -259,6 +261,21 @@
             @if (!string.IsNullOrEmpty(_unpairError))
             {
                 <p class="text-danger small mt-2">@_unpairError</p>
+            }
+            @if (_confirmingPhraseErase)
+            {
+                <div class="d-flex gap-2">
+                    <button class="btn btn-danger"
+                            disabled="@_unpairing"
+                            @onclick="@(() => UnpairAllAsync(eraseRecoveryPhrase: true))">
+                        @(_unpairing ? "Wiping..." : "Wipe, and erase the phrase")
+                    </button>
+                    <button class="btn btn-secondary"
+                            disabled="@_unpairing"
+                            @onclick="KeepPhrase">
+                        Keep the phrase
+                    </button>
+                </div>
             }
         </div>
     </div>
@@ -318,6 +335,8 @@
     private bool _confirmingUnpair = false;
     private bool _unpairing = false;
     private string? _unpairError;
+    // The wipe was refused for the recovery phrase: the second question is on screen.
+    private bool _confirmingPhraseErase;
     private const string KeyAlias = "recto.phone.identity";
 
     // ── Recovery-phrase ceremony (Build 12, 2026-07-11) ───────────────────
@@ -624,7 +643,13 @@
         }
     }
 
-    private async Task UnpairAllAsync()
+    private void KeepPhrase()
+    {
+        _confirmingPhraseErase = false;
+        _unpairError = null;
+    }
+
+    private async Task UnpairAllAsync(bool eraseRecoveryPhrase)
     {
         _unpairing = true;
         _unpairError = null;
@@ -636,7 +661,8 @@
         // instead of a one-tap trust-root reduction.
         // (Pin store note carried over: no public ClearAll on
         // IPinningService — per-circuit memory, rebuilds on next pair.)
-        var result = await Unpair.UnpairAllAsync(KeyAlias, CancellationToken.None);
+        var result = await Unpair.UnpairAllAsync(KeyAlias, CancellationToken.None, eraseRecoveryPhrase);
+        _confirmingPhraseErase = result.Status == UnpairAllStatus.RefusedRecoveryPhrase;
         if (result.Status == UnpairAllStatus.Completed)
         {
             Nav.NavigateTo("/", forceLoad: true);

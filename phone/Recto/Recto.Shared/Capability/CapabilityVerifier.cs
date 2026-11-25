@@ -722,17 +722,15 @@ public static class CapabilityJws
             // payload_sha256 (2026-10-04): the consumer's pin on the exact
             // payload approved. Read only as a string; any other JSON kind
             // is left null rather than coerced (the card then shows no pin).
-            string? payloadSha256 = null;
-            if (scopeElem.TryGetProperty("payload_sha256", out var pinElem)
-                && pinElem.ValueKind == JsonValueKind.String)
-            {
-                payloadSha256 = pinElem.GetString();
-            }
             scope = new CapabilityScope(
                 Env: ReadStringList(scopeElem, "env"),
                 Services: ReadStringList(scopeElem, "services"),
                 Repos: ReadStringList(scopeElem, "repos"),
-                PayloadSha256: payloadSha256);
+                PayloadSha256: ReadOptionalString(scopeElem, "payload_sha256"),
+                CreateForOwner: ReadOptionalString(scopeElem, "create_for_owner"),
+                ChatRoomId: ReadOptionalString(scopeElem, "chat_room_id"),
+                TargetUserId: ReadOptionalString(scopeElem, "target_user_id"),
+                PairingCode: ReadOptionalString(scopeElem, "pairing_code"));
         }
 
         var limits = CapabilityLimits.Empty;
@@ -754,6 +752,11 @@ public static class CapabilityJws
             DenyActions: deny,
             Limits: limits);
     }
+
+    private static string? ReadOptionalString(JsonElement parent, string name)
+        => parent.TryGetProperty(name, out var elem) && elem.ValueKind == JsonValueKind.String
+            ? elem.GetString()
+            : null;
 
     private static IReadOnlyList<string> ReadStringList(JsonElement parent, string name)
     {
@@ -852,6 +855,10 @@ public static class CapabilityJws
         // Omitted when null, exactly as Python's _strip_none omits an unset
         // scope extension: claims without a pin keep their pinned bytes.
         if (scope.PayloadSha256 is not null) dict["payload_sha256"] = scope.PayloadSha256;
+        if (scope.CreateForOwner is not null) dict["create_for_owner"] = scope.CreateForOwner;
+        if (scope.ChatRoomId is not null) dict["chat_room_id"] = scope.ChatRoomId;
+        if (scope.TargetUserId is not null) dict["target_user_id"] = scope.TargetUserId;
+        if (scope.PairingCode is not null) dict["pairing_code"] = scope.PairingCode;
         return dict;
     }
 

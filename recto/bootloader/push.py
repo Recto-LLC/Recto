@@ -42,6 +42,10 @@ from typing import Any
 
 logger = logging.getLogger("recto.bootloader.push")
 
+#: One wake per phone per this many seconds. A wake says only "check your
+#: queue", so the cards queued meanwhile need one more, not one each.
+WAKE_MIN_INTERVAL_SECONDS = 3.0
+
 #: Platform discriminators -- byte-for-byte the values the phone app's
 #: PushPlatform constants send on the wire.
 PLATFORM_APNS = "apns"
@@ -289,10 +293,23 @@ class PushDispatcher:
     handler: it returns immediately (daemon thread does the send) and
     NEVER raises -- push is best-effort by design (hard property 2).
     Phones without a registered token are silently skipped (poll-only).
+
+    At most one wake leaves for a phone per ``wake_min_interval_seconds``:
+    the first goes at once, and the ones asked for inside the interval are
+    one wake at its end -- late by seconds, never lost.
     """
 
-    def __init__(self, senders: list[PushSender]):
+    def __init__(
+        self,
+        senders: list[PushSender],
+        *,
+        wake_min_interval_seconds: float = WAKE_MIN_INTERVAL_SECONDS,
+    ):
         self._senders = {s.platform: s for s in senders}
+        self._interval = max(0.0, float(wake_min_interval_seconds))
+        self._wake_lock = threading.Lock()
+        self._last_wake: dict[str, float] = {}      # phone -> monotonic time of its last wake
+        self._owed_wake: dict[str, tuple[PushSender, str, str, str]] = {}   # phone -> the wake due at its interval's end
 
     @property
     def platforms(self) -> list[str]:
@@ -311,11 +328,46 @@ class PushDispatcher:
                 getattr(phone, "phone_id", "?"),
             )
             return
+        phone_id = getattr(phone, "phone_id", "?")
+        wake = (sender, token, request_id, phone_id)
+        now = time.monotonic()
+        with self._wake_lock:
+            if phone_id in self._owed_wake:
+                # Already owed one; the newest token is the one it goes to.
+                self._owed_wake[phone_id] = wake
+                return
+            self._last_wake = {p: t for p, t in self._last_wake.items() if t + self._interval > now}
+            last = self._last_wake.get(phone_id)
+            wait = 0.0 if last is None else last + self._interval - now
+            if wait > 0:
+                self._owed_wake[phone_id] = wake
+            else:
+                self._last_wake[phone_id] = now
+        if wait <= 0:
+            self._start_send(wake)
+            return
+        timer = threading.Timer(wait, self._send_owed, args=(phone_id,))
+        timer.daemon = True
+        try:
+            timer.start()
+        except RuntimeError:
+            # No thread to wait in: the wake goes now rather than never.
+            self._send_owed(phone_id)
+
+    def _send_owed(self, phone_id: str) -> None:
+        with self._wake_lock:
+            wake = self._owed_wake.pop(phone_id, None)
+            if wake is not None:
+                self._last_wake[phone_id] = time.monotonic()
+        if wake is not None:
+            self._start_send(wake)
+
+    def _start_send(self, wake: tuple[PushSender, str, str, str]) -> None:
         threading.Thread(
             target=self._send_logged,
-            args=(sender, token, request_id, getattr(phone, "phone_id", "?")),
+            args=wake,
             daemon=True,
-            name=f"recto-push-{platform}",
+            name=f"recto-push-{wake[0].platform}",
         ).start()
 
     def _send_logged(

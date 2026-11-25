@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..connections.types import normalize_connection_key
+from ..connections.types import normalize_connection_key, read_sidecar, text_or, unreadable
 from ..subject_handle import normalize_subject, subject_storage_id
 
 # Entries are scoped by the platform's SUBJECT HANDLE (recto.subject_handle):
@@ -106,8 +106,8 @@ class UserVaultEntryMeta:
             platform=raw["platform"],
             subject=normalize_subject(raw["subject"]),
             key=normalize_user_vault_key(raw["key"]),
-            display_name=raw.get("display_name", raw["key"]),
-            category=raw.get("category", "uncategorized"),
+            display_name=text_or(raw.get("display_name"), raw["key"]),
+            category=text_or(raw.get("category"), "uncategorized"),
             has_secret=bool(raw.get("has_secret", False)),
             created_at_unix=int(raw.get("created_at_unix", 0)),
             updated_at_unix=int(raw.get("updated_at_unix", 0)),
@@ -128,10 +128,13 @@ class UserVaultStore:
     def __init__(
         self,
         entries: dict[tuple[str, str, str], UserVaultEntryMeta] | None = None,
+        unnamed: list[dict[str, Any]] | None = None,
     ):
         self._entries: dict[tuple[str, str, str], UserVaultEntryMeta] = (
             entries or {}
         )
+        # Rows whose platform is no string: nothing can ask for one, so none is listed, and each is saved as it was.
+        self._unnamed: list[dict[str, Any]] = unnamed or []
 
     # ---- queries -------------------------------------------------------
 
@@ -174,23 +177,21 @@ class UserVaultStore:
 
     @classmethod
     def load(cls, path: Path) -> "UserVaultStore":
-        if not path.exists():
-            return cls()
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            # Corrupt or unreadable — start empty rather than crash the
-            # bootloader. Secret values survive a metadata-file loss
-            # independently (same posture as ConnectionStore).
-            return cls()
         entries: dict[tuple[str, str, str], UserVaultEntryMeta] = {}
-        for row in raw.get("entries", []):
+        unnamed: list[dict[str, Any]] = []
+        for row in read_sidecar(path, "entries"):
             try:
                 meta = UserVaultEntryMeta.from_dict(row)
+                hash(meta.platform)
             except (KeyError, ValueError):
                 continue
-            entries[(meta.platform, meta.subject, meta.key)] = meta
-        return cls(entries)
+            except (TypeError, OverflowError) as exc:
+                raise unreadable(path, exc) from exc
+            if isinstance(meta.platform, str):
+                entries[(meta.platform, meta.subject, meta.key)] = meta
+            else:
+                unnamed.append(row)
+        return cls(entries, unnamed)
 
     def save(self, path: Path) -> None:
         payload = {
@@ -202,7 +203,7 @@ class UserVaultStore:
                     self._entries.values(),
                     key=lambda m: (m.platform, m.subject, m.category, m.key),
                 )
-            ],
+            ] + self._unnamed,
         }
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")

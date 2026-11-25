@@ -36,12 +36,22 @@ namespace Recto.Shared.Capability;
 /// <c>_strip_none</c> rule &mdash; so every claim without it keeps its
 /// byte-identical signing input.
 /// </para>
+/// <para>
+/// <c>CreateForOwner</c>, <c>ChatRoomId</c>, <c>TargetUserId</c> and
+/// <c>PairingCode</c> mirror Python's other scope extensions: each binds a
+/// grant to one entity, is signed, and so is shown. Emitted only when set,
+/// by the same rule.
+/// </para>
 /// </summary>
 public sealed record CapabilityScope(
     IReadOnlyList<string> Env,
     IReadOnlyList<string> Services,
     IReadOnlyList<string> Repos,
-    string? PayloadSha256 = null)
+    string? PayloadSha256 = null,
+    string? CreateForOwner = null,
+    string? ChatRoomId = null,
+    string? TargetUserId = null,
+    string? PairingCode = null)
 {
     public static CapabilityScope Empty { get; } = new(
         Env: System.Array.Empty<string>(),

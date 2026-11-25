@@ -18,6 +18,13 @@ public enum UnpairAllStatus
     /// </summary>
     RefusedGenesisMember,
 
+    /// <summary>
+    /// Refused: the phone holds a recovery phrase (or must be presumed to)
+    /// and the caller did not say it may be erased. The message names the
+    /// backup and the way on that keeps it.
+    /// </summary>
+    RefusedRecoveryPhrase,
+
     /// <summary>The wipe was attempted and a step failed.</summary>
     Failed
 }
@@ -35,9 +42,12 @@ public interface IUnpairService
     /// <summary>
     /// Wipes pairing state, TOTP secrets, and the enclave key under
     /// <paramref name="keyAlias"/> — unless this phone is a genesis member,
-    /// in which case it refuses without touching anything.
+    /// in which case it refuses without touching anything. The TOTP wipe
+    /// empties the app's secure storage, the recovery phrase with it, so a
+    /// phone that holds a phrase is refused too, until a caller that asked
+    /// the person passes <paramref name="eraseRecoveryPhrase"/>.
     /// </summary>
-    Task<UnpairAllResult> UnpairAllAsync(string keyAlias, CancellationToken ct);
+    Task<UnpairAllResult> UnpairAllAsync(string keyAlias, CancellationToken ct, bool eraseRecoveryPhrase = false);
 }
 
 public sealed class UnpairService : IUnpairService
@@ -52,6 +62,14 @@ public sealed class UnpairService : IUnpairService
         "run the recovery ceremony: restore from the recovery phrase, then re-enrol " +
         "the member set on the bootloader.";
 
+    /// <summary>The one recovery phrase every signer on the phone derives from.</summary>
+    public const string RecoveryPhraseAlias = "default";
+
+    public const string RecoveryPhraseRefusalMessage =
+        "This phone holds a recovery phrase, or was set up with one, and a full wipe erases it: the wallet it opens comes back " +
+        "only with the words. Back the phrase up in Settings first. To leave this bootloader and keep the " +
+        "phrase, use Settings → Unpair bootloader (keep vault).";
+
     public const string FailClosedPrefix =
         "Genesis membership could not be read; refusing the wipe (fail closed). ";
 
@@ -59,20 +77,24 @@ public sealed class UnpairService : IUnpairService
     private readonly ITotpService _totp;
     private readonly IEnclaveKeyService _enclaveKeys;
     private readonly IGenesisStateService _genesis;
+    private readonly IRecoveryPhraseStore _phrases;
 
     public UnpairService(
         IPairingStateService pairing,
         ITotpService totp,
         IEnclaveKeyService enclaveKeys,
-        IGenesisStateService genesis)
+        IGenesisStateService genesis,
+        IRecoveryPhraseStore phrases)
     {
         _pairing = pairing;
         _totp = totp;
         _enclaveKeys = enclaveKeys;
         _genesis = genesis;
+        _phrases = phrases;
     }
 
-    public async Task<UnpairAllResult> UnpairAllAsync(string keyAlias, CancellationToken ct)
+    public async Task<UnpairAllResult> UnpairAllAsync(
+        string keyAlias, CancellationToken ct, bool eraseRecoveryPhrase = false)
     {
         // THE GUARD — ahead of the first destructive call, fail-closed:
         // an unreadable marker is treated as membership, because the cost
@@ -89,6 +111,11 @@ public sealed class UnpairService : IUnpairService
         if (membership.Value)
         {
             return new UnpairAllResult(UnpairAllStatus.RefusedGenesisMember, GenesisRefusalMessage);
+        }
+
+        if (!eraseRecoveryPhrase && await HoldsPhraseAsync().ConfigureAwait(false))
+        {
+            return new UnpairAllResult(UnpairAllStatus.RefusedRecoveryPhrase, RecoveryPhraseRefusalMessage);
         }
 
         try
@@ -110,6 +137,22 @@ public sealed class UnpairService : IUnpairService
         catch (Exception ex)
         {
             return new UnpairAllResult(UnpairAllStatus.Failed, $"{ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    // Only whether there is one. A store that cannot be read is presumed to hold it, and so is one that reads empty
+    // where a phrase was once set up (RecoveryPhraseProvisioning: it may be there and unreadable now): a wrong "yes"
+    // is one more question, and a wrong "no" is a wallet.
+    private async Task<bool> HoldsPhraseAsync()
+    {
+        try
+        {
+            return !string.IsNullOrEmpty(await _phrases.ReadAsync(RecoveryPhraseAlias).ConfigureAwait(false))
+                || _phrases.WasProvisioned(RecoveryPhraseAlias);
+        }
+        catch (Exception)
+        {
+            return true;
         }
     }
 }

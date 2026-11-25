@@ -149,9 +149,12 @@ def test_a_member_code_answers_no_slot_question_by_name(ctx) -> None:
 
 def _card(ctx, phone_ref: str, member_of: Any = None, *, omit: bool = False) -> tuple[int, dict[str, Any]]:
     """The consumer's agent asks for a capability on one phone; ``member_of`` rides beside the claims."""
+    import uuid
+
     from tests.test_bootloader_capability import _claims_dict
 
-    body: dict[str, Any] = {"phone_id": phone_ref, "claims": _claims_dict(), "operation_description": "member plane"}
+    claims = dict(_claims_dict(), jti=f"cap-{uuid.uuid4().hex}")   # each ask is its own
+    body: dict[str, Any] = {"phone_id": phone_ref, "claims": claims, "operation_description": "member plane"}
     if not omit:
         body["member_of"] = member_of
     return _http("POST", f"{ctx['base_url']}/v0.4/capability/request", body,

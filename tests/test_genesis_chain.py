@@ -521,8 +521,8 @@ def test_seal_passphrase_on_a_chained_vault_exits_3_by_name(tmp_path, monkeypatc
 
 
 def test_a_chain_the_cli_cannot_read_is_still_never_written_over(tmp_path, monkeypatch):
-    """The store is the backstop: a `chain` that is not a list reads as unreadable to the CLI's
-    up-front look, and the writer itself still refuses the overwrite."""
+    """A `chain` that is not a list reads as unreadable to the CLI's up-front look, and the writer
+    itself refuses the overwrite too."""
     import pathlib
 
     _store(tmp_path, {"chain": {"not": "a list"}, "stored_at_unix": 1})
@@ -540,3 +540,127 @@ def test_a_PRE_CHAIN_vault_still_takes_a_member_write(tmp_path):
     s = _store(tmp_path, {"members": {}, "stored_at_unix": 1})
     s.put_genesis_member("passphrase", pub, algo)
     assert s.get_genesis_member("passphrase") == pub
+
+
+# ---------------------------------------------------------------------------
+# A FILE THAT CANNOT BE READ IS NEVER WRITTEN OVER
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("stored", [
+    "{ not json", "", "[]", "\"text\"", "{\"members\": [1]}", "{\"members\": []}", "{\"members\": 0}",
+    "{\"members\": \"\"}", "{\"members\": false}",
+])
+def test_a_member_write_over_an_unreadable_file_is_refused_and_the_file_kept(tmp_path, stored):
+    import pathlib
+
+    from recto.bootloader.state import StateStore
+
+    path = pathlib.Path(tmp_path) / "genesis_members.json"
+    path.write_text(stored, encoding="utf-8")
+    before = path.read_bytes()
+    s = StateStore(state_dir=pathlib.Path(tmp_path))
+    pub, algo, _ = _ed()
+    with pytest.raises(ChainError):
+        s.put_genesis_member("passphrase", pub, algo)
+    assert path.read_bytes() == before
+    assert s.list_genesis_members_full() == {}
+    assert "<file>" in s.list_unreadable_genesis_members()
+
+
+@pytest.mark.parametrize("chain", ["[]", "{}", "false", "0", "\"\""])
+def test_a_stored_chain_that_holds_nothing_is_unreadable_and_never_written_over(tmp_path, monkeypatch, chain):
+    """A chain that is there is never no chain, whatever it holds."""
+    import pathlib
+
+    from recto.bootloader.state import StateStore
+
+    path = pathlib.Path(tmp_path) / "genesis_members.json"
+    path.write_text('{"chain": %s, "members": {}}' % chain, encoding="utf-8")
+    before = path.read_bytes()
+    s = StateStore(state_dir=pathlib.Path(tmp_path))
+    pub, algo, _ = _ed()
+    assert s.list_genesis_members_full() == {}
+    assert "<chain>" in s.list_unreadable_genesis_members()
+    with pytest.raises(ChainError):
+        s.read_genesis_chain()
+    with pytest.raises(ChainError):
+        s.genesis_chain_state()
+    with pytest.raises(ChainError):
+        s.put_genesis_member("passphrase", pub, algo)
+    with pytest.raises(ChainError):
+        s.append_genesis_chain_entry(_genesis(pub, algo).as_record())
+    rc, err, asked = _seal_passphrase(tmp_path, monkeypatch, force=True)
+    assert rc == 3 and asked == [], err
+    assert path.read_bytes() == before
+
+
+def test_a_file_with_no_chain_and_no_members_is_an_empty_one(tmp_path):
+    """THE POSITIVE CONTROL: absent, null and an empty map are nothing stored."""
+    pub, algo, _ = _ed()
+    for n, stored in enumerate(({}, {"chain": None, "members": None}, {"members": {}})):
+        d = tmp_path / str(n)
+        d.mkdir()
+        s = _store(d, dict(stored, stored_at_unix=1))
+        assert s.list_unreadable_genesis_members() == {}
+        s.put_genesis_member("passphrase", pub, algo)
+        assert s.get_genesis_member("passphrase") == pub
+
+
+def test_a_chained_file_is_read_by_its_chain_whatever_the_flat_map_holds(tmp_path, two_member_chain):
+    chain, *_ = two_member_chain
+    s = _store(tmp_path, {"chain": [e.as_record() for e in chain], "members": ["left over"], "stored_at_unix": 1})
+    assert set(s.list_genesis_members_full()) == {"passphrase", "recovery-phone"}
+    assert s.list_unreadable_genesis_members() == {}
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_seal_passphrase_over_an_unreadable_file_is_refused_before_the_phrase(tmp_path, monkeypatch, force):
+    import pathlib
+
+    path = pathlib.Path(tmp_path) / "genesis_members.json"
+    path.write_text("{ not json", encoding="utf-8")
+    rc, err, asked = _seal_passphrase(tmp_path, monkeypatch, force=force)
+    assert rc == 3
+    assert "never written over" in err
+    assert asked == []
+    assert path.read_text(encoding="utf-8") == "{ not json"
+
+
+# ---------------------------------------------------------------------------
+# A SEAL OR A ROTATION IS NEVER READ FROM A SET WITH NO PASSPHRASE
+# ---------------------------------------------------------------------------
+
+def _device_only_chain():
+    pub, algo, sign = _p256()
+    return [_genesis(pub, algo, kind="recovery-phone")], sign
+
+
+def test_a_seal_signed_by_a_device_alone_does_not_replay():
+    import json as _json
+
+    from recto.bootloader.genesis_chain import act_message
+
+    chain, sign = _device_only_chain()
+    key = ec.generate_private_key(ec.SECP256K1()).public_key().public_numbers()
+    operator = key.x.to_bytes(32, "big") + key.y.to_bytes(32, "big")
+    meta = _json.dumps({"identity_members": [], "operator_pubkey": operator.hex()}, sort_keys=True,
+                       separators=(",", ":"))
+    fields = dict(seq=1, op="seal-id", kind="bootloader-id", pubkey=b"rb1-test", algorithm="none",
+                  prev=entry_hash(chain[-1]), meta=meta)
+    sig = sign(act_message(sealed_id="rb1-test", **fields))
+    chain.append(build_entry(signatures=[sig], **fields))
+    with pytest.raises(ChainError, match="no passphrase is sealed"):
+        replay(chain)
+
+
+def test_a_rotation_signed_by_a_device_alone_does_not_replay():
+    from recto.bootloader.genesis_chain import act_message
+
+    chain, sign = _device_only_chain()
+    key = ec.generate_private_key(ec.SECP256K1()).public_key().public_numbers()
+    operator = key.x.to_bytes(32, "big") + key.y.to_bytes(32, "big")
+    fields = dict(seq=1, op="rotate-operator", kind="operator", pubkey=operator, algorithm="none",
+                  prev=entry_hash(chain[-1]), meta=None)
+    chain.append(build_entry(signatures=[sign(act_message(sealed_id=None, **fields))], **fields))
+    with pytest.raises(ChainError, match="no passphrase is sealed"):
+        replay(chain)

@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace Recto.Shared.Protocol.V04;
@@ -10,7 +12,8 @@ namespace Recto.Shared.Protocol.V04;
 /// push.
 /// </summary>
 public sealed record PendingRequestsResponse(
-    [property: JsonPropertyName("requests")] IReadOnlyList<PendingRequest> Requests,
+    [property: JsonPropertyName("requests")]
+    [property: JsonConverter(typeof(PendingRequestListConverter))] IReadOnlyList<PendingRequest> Requests,
     // 2026-09-16 SERVER-SIGNED CARDS: an ES256K JWS by the bootloader's pair key
     // whose cap.scope.payload_sha256 is the SHA-256 of the exact `requests` text
     // on the wire, sub = phone:<this phone>. Null from bootloaders that hold no
@@ -26,4 +29,65 @@ public sealed record PendingRequestsResponse(
     /// </summary>
     [JsonIgnore]
     public string? RequestsRawJson { get; init; }
+}
+
+/// <summary>
+/// Reads the queue one card at a time: a card that cannot be read is one
+/// unreadable card under its id, and the others are read as they are. What
+/// the envelope signs is the raw text, which this does not touch.
+/// </summary>
+public sealed class PendingRequestListConverter : JsonConverter<IReadOnlyList<PendingRequest>>
+{
+    public override bool HandleNull => true;
+
+    public override IReadOnlyList<PendingRequest> Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        using var list = JsonDocument.ParseValue(ref reader);
+        if (list.RootElement.ValueKind != JsonValueKind.Array) throw new JsonException("requests is not a list");
+        var cards = new List<PendingRequest>(list.RootElement.GetArrayLength());
+        foreach (var element in list.RootElement.EnumerateArray()) cards.Add(ReadCard(element, options));
+        return cards;
+    }
+
+    public override void Write(Utf8JsonWriter writer, IReadOnlyList<PendingRequest> value, JsonSerializerOptions options)
+        => JsonSerializer.Serialize(writer, value, options);
+
+    private static PendingRequest ReadCard(JsonElement element, JsonSerializerOptions options)
+    {
+        try
+        {
+            var card = element.Deserialize<PendingRequest>(options);
+            if (card is { Context: not null } && !string.IsNullOrEmpty(card.RequestId) && !string.IsNullOrEmpty(card.Kind))
+            {
+                return card with
+                {
+                    Service = card.Service ?? string.Empty,
+                    Secret = card.Secret ?? string.Empty,
+                    Context = card.Context with
+                    {
+                        ChildArgv0 = card.Context.ChildArgv0 ?? string.Empty,
+                        OperationDescription = card.Context.OperationDescription ?? string.Empty,
+                    },
+                };
+            }
+        }
+        catch (Exception)
+        {
+            // Whatever is wrong with one card, the others are still the person's to answer.
+        }
+        return PendingRequest.Unreadable(TextOf(element, "request_id"), TextOf(element, "kind"));
+    }
+
+    private static string TextOf(JsonElement element, string name)
+    {
+        try
+        {
+            return element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out var text)
+                && text.ValueKind == JsonValueKind.String ? text.GetString() ?? string.Empty : string.Empty;
+        }
+        catch (Exception)
+        {
+            return string.Empty;
+        }
+    }
 }

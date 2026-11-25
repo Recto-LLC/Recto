@@ -89,13 +89,123 @@ public class UnpairServiceTests
         }
     }
 
-    private static (UnpairService Sut, FakeGenesisState Genesis, FakePairingState Pairing, FakeTotp Totp, FakeEnclaveKeys Keys) Build(bool? member)
+    private sealed class FakePhrases : IRecoveryPhraseStore
+    {
+        public string? Phrase;
+        public bool Throws;
+        public bool? Provisioned = false;   // null: the marker cannot be read
+        public Task<string?> ReadAsync(string alias)
+            => Throws ? throw new InvalidOperationException("secure storage unavailable")
+                : Task.FromResult(alias == UnpairService.RecoveryPhraseAlias ? Phrase : null);
+        public Task WriteAsync(string alias, string phrase) => throw new NotSupportedException();
+        public bool WasProvisioned(string alias)
+            => alias == UnpairService.RecoveryPhraseAlias && (Provisioned ?? throw new InvalidOperationException("preferences unavailable"));
+    }
+
+    private static (UnpairService Sut, FakeGenesisState Genesis, FakePairingState Pairing, FakeTotp Totp, FakeEnclaveKeys Keys) Build(
+        bool? member, FakePhrases? phrases = null)
     {
         var genesis = new FakeGenesisState { Member = member };
         var pairing = new FakePairingState();
         var totp = new FakeTotp();
         var keys = new FakeEnclaveKeys();
-        return (new UnpairService(pairing, totp, keys, genesis), genesis, pairing, totp, keys);
+        return (new UnpairService(pairing, totp, keys, genesis, phrases ?? new FakePhrases()), genesis, pairing, totp, keys);
+    }
+
+    // ── the recovery phrase ──────────────────────────────────────────────
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task APhoneThatHoldsAPhrase_OrCannotSay_IsNotWipedUnasked(bool unreadable)
+    {
+        var (sut, _, pairing, totp, keys) = Build(member: false,
+            new FakePhrases { Phrase = "made up words", Throws = unreadable });
+
+        var result = await sut.UnpairAllAsync(Alias, CancellationToken.None);
+
+        Assert.Equal(UnpairAllStatus.RefusedRecoveryPhrase, result.Status);
+        Assert.Contains("Back the phrase up", result.Message);
+        Assert.Contains("keep vault", result.Message);
+        Assert.DoesNotContain("made up words", result.Message);
+        Assert.Empty(keys.Deleted);
+        Assert.Empty(pairing.Calls);
+        Assert.Equal(0, totp.ClearAllCalls);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(null)]
+    public async Task APhraseThatReadsEmptyWhereOneWasSetUp_IsNotWipedUnasked(bool? provisioned)
+    {
+        var (sut, _, pairing, totp, keys) = Build(member: false, new FakePhrases { Provisioned = provisioned });
+
+        var result = await sut.UnpairAllAsync(Alias, CancellationToken.None);
+
+        Assert.Equal(UnpairAllStatus.RefusedRecoveryPhrase, result.Status);
+        Assert.Empty(keys.Deleted);
+        Assert.Empty(pairing.Calls);
+        Assert.Equal(0, totp.ClearAllCalls);
+
+        Assert.Equal(UnpairAllStatus.Completed,
+            (await sut.UnpairAllAsync(Alias, CancellationToken.None, eraseRecoveryPhrase: true)).Status);
+    }
+
+    [Fact]
+    public async Task APhoneThatNeverHadAPhrase_IsWipedAsBefore()
+    {
+        var (sut, _, _, totp, _) = Build(member: false, new FakePhrases());
+
+        Assert.Equal(UnpairAllStatus.Completed, (await sut.UnpairAllAsync(Alias, CancellationToken.None)).Status);
+        Assert.Equal(1, totp.ClearAllCalls);
+    }
+
+    [Fact]
+    public async Task ThePersonWhoSaidThePhraseMayGo_IsHeard()
+    {
+        var (sut, _, _, totp, keys) = Build(member: false, new FakePhrases { Phrase = "made up words" });
+
+        var result = await sut.UnpairAllAsync(Alias, CancellationToken.None, eraseRecoveryPhrase: true);
+
+        Assert.Equal(UnpairAllStatus.Completed, result.Status);
+        Assert.Equal(1, totp.ClearAllCalls);
+        Assert.Contains(Alias, keys.Deleted);
+    }
+
+    [Fact]
+    public async Task AGenesisMember_IsRefusedWhateverWasSaidAboutThePhrase()
+    {
+        var (sut, _, _, totp, _) = Build(member: true, new FakePhrases { Phrase = "made up words" });
+
+        var result = await sut.UnpairAllAsync(Alias, CancellationToken.None, eraseRecoveryPhrase: true);
+
+        Assert.Equal(UnpairAllStatus.RefusedGenesisMember, result.Status);
+        Assert.Equal(0, totp.ClearAllCalls);
+    }
+
+    [Fact]
+    public void TheOneTapPath_NeverSaysThePhraseMayGo_AndShowsTheRefusal()
+    {
+        var page = Capability.ProfileSigningInputTests.HomePage();
+        var fresh = Capability.ProfileSigningInputTests.MethodBody(page, "HandleStartFreshClick");
+        Assert.DoesNotContain("eraseRecoveryPhrase", fresh);
+        Assert.Contains("UnpairAllStatus.RefusedRecoveryPhrase", fresh);
+        var button = page.IndexOf("@onclick=\"HandleStartFreshClick\">", StringComparison.Ordinal);
+        Assert.True(button > 0);
+        Assert.Contains("@_errorMessage", page.Substring(button, 420));
+    }
+
+    [Fact]
+    public void TheHost_RegistersTheStoreTheGuardReads()
+    {
+        var dir = new System.IO.DirectoryInfo(System.AppContext.BaseDirectory);
+        while (dir is not null && !System.IO.File.Exists(System.IO.Path.Combine(dir.FullName, "Recto", "MauiProgram.cs")))
+        {
+            dir = dir.Parent;
+        }
+        Assert.NotNull(dir);
+        var program = System.IO.File.ReadAllText(System.IO.Path.Combine(dir!.FullName, "Recto", "MauiProgram.cs"));
+        Assert.Contains("AddSingleton<IRecoveryPhraseStore>(MauiRecoveryPhraseStore.Instance)", program);
     }
 
     // ── the guard (red-builds the violation) ─────────────────────────────
@@ -169,7 +279,7 @@ public class UnpairServiceTests
         var pairing = new FakePairingState();
         var totp = new FakeTotp();
         var keys = new ThrowingEnclaveKeys();
-        var sut = new UnpairService(pairing, totp, keys, genesis);
+        var sut = new UnpairService(pairing, totp, keys, genesis, new FakePhrases());
 
         var result = await sut.UnpairAllAsync(Alias, CancellationToken.None);
 

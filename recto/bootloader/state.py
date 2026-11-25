@@ -433,9 +433,8 @@ class AppContext:
     Frozen + slots-equipped to match the rest of the StateStore's
     dataclass conventions. Operator-administered registries on
     ``BootloaderConfig.principal_apps`` carry instances; the
-    bootloader looks up by abstract principal-id (cap_agent_id for
-    capability_request, service-name fallback for other
-    request kinds).
+    bootloader looks up by the authenticated agent's id and by
+    nothing the request body says.
     """
 
     app_id: str
@@ -1868,6 +1867,11 @@ class StateStoreBase(ABC):
     def list_pending_for_phone(self, phone_id: str) -> list[PendingRequest]: ...
     @abstractmethod
     def take_pending(self, request_id: str) -> PendingRequest | None: ...
+    @abstractmethod
+    def replace_pending(self, req: PendingRequest) -> bool:
+        """Write over a request that is still on the queue, in one step with that check. False, writing nothing, when
+        it is not there: a request that was taken is never put back."""
+        ...
 
     # Capability results
     @abstractmethod
@@ -2302,6 +2306,14 @@ class StateStore(StateStoreBase):
                 p for p in self._pending.values() if p.phone_id == phone_id
             ]
 
+    def replace_pending(self, req: PendingRequest) -> bool:
+        with self._lock:
+            if req.request_id not in self._pending:
+                return False
+            self._pending[req.request_id] = req
+            self._save_pending()
+            return True
+
     def take_pending(self, request_id: str) -> PendingRequest | None:
         """Pop a pending request by id. Returns None if not present."""
         with self._lock:
@@ -2566,6 +2578,11 @@ class StateStore(StateStoreBase):
         so a write would drop the chain. Raises ChainError, writing nothing,
         when the stored file carries a chain: a member of a chained vault
         changes by a top-plane act (an appended chain entry).
+
+        A FILE THAT CANNOT BE READ IS NEVER WRITTEN OVER. Raises ChainError,
+        writing nothing, when the stored file does not parse or is not the
+        shape this writer keeps: what it holds may be a chain or the only
+        copy of a member.
         """
         from recto.bootloader.genesis_chain import ChainError
 
@@ -2575,18 +2592,19 @@ class StateStore(StateStoreBase):
         algo = validate_genesis_pubkey(pubkey, algorithm)
         with self._lock:
             path = self._dir / "genesis_members.json"
-            body = {}
-            if path.exists():
-                try:
-                    body = json.loads(path.read_text(encoding="utf-8"))
-                except Exception:
-                    body = {}
-            if body.get("chain"):
+            body = self._read_members_body_locked()
+            if body.get("chain") is not None:
                 raise ChainError(
                     "this vault keeps its members in its genesis chain; a member is "
                     "changed by a top-plane act, never written over the chain"
                 )
-            members = dict(body.get("members") or {})
+            stored = body.get("members")
+            if stored is not None and not isinstance(stored, dict):
+                raise ChainError(
+                    f"genesis_members.json keeps its members as a {type(stored).__name__}, not an object; "
+                    "refusing to write over them. Restore the file before writing."
+                )
+            members = dict(stored or {})
             members[kind] = {"pubkey": pubkey.hex(), "algorithm": algo}
             self._atomic_write(path, {
                 "members": members,
@@ -2614,15 +2632,16 @@ class StateStore(StateStoreBase):
         """
         from recto.bootloader.genesis_chain import ChainError, entries_from_records, replay
 
+        # A chain starts with its genesis entry: a stored one that holds none was never written by a writer here.
+        if not isinstance(stored, list) or not stored:
+            return {}, {"<chain>": "the stored genesis chain holds no list of entries"}
         try:
-            entries = entries_from_records(stored or [])
+            entries = entries_from_records(stored)
         except ChainError as exc:
             return {}, {"<chain>": f"membership chain is malformed: {exc}"}
         except Exception as exc:
             return {}, {"<chain>": f"membership chain entry is unreadable: {exc}"}
 
-        if not entries:
-            return {}, {}
         try:
             resolved = replay(entries)
         except ChainError as exc:
@@ -2689,6 +2708,8 @@ class StateStore(StateStoreBase):
                 # vault either. Reported against a reserved kind so the
                 # caller sees a reason instead of silence.
                 return {}, {"<file>": f"genesis_members.json is unparseable: {exc}"}
+            if not isinstance(raw, dict):
+                return {}, {"<file>": "genesis_members.json is not a members object"}
 
             # GATE 5 -- THE CHAIN IS AUTHORITATIVE WHEN IT EXISTS.
             #
@@ -2702,11 +2723,14 @@ class StateStore(StateStoreBase):
             # A chain that fails replay makes every member UNREADABLE -- never
             # absent. Tampering must never look like an empty vault.
             if raw.get("chain") is not None:
-                return self._replay_stored_chain(raw.get("chain"))
+                return self._replay_stored_chain(raw["chain"])
+            members = raw.get("members")
+            if members is not None and not isinstance(members, dict):
+                return {}, {"<file>": "genesis_members.json is not a members object"}
 
             good: dict[str, GenesisMember] = {}
             bad: dict[str, str] = {}
-            for k, v in (raw.get("members") or {}).items():
+            for k, v in (members or {}).items():
                 if isinstance(v, str):
                     hexed, algo = v, GENESIS_LEGACY_ALGORITHM
                 elif isinstance(v, dict):
@@ -2849,31 +2873,45 @@ class StateStore(StateStoreBase):
         check_seal_mark(entries, state, mark)
         return state
 
-    def _read_chain_locked(self) -> list[dict[str, Any]]:
-        """Caller holds the lock. `[]` means NO CHAIN -- not a broken one."""
+    def _read_members_body_locked(self) -> dict[str, Any]:
+        """Caller holds the lock. genesis_members.json as it is stored; `{}` means NO FILE."""
         from recto.bootloader.genesis_chain import ChainError
 
         path = self._dir / "genesis_members.json"
         if not path.exists():
-            return []
+            return {}
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except Exception as exc:
-            # Refuse rather than return []. An unparseable file that read
-            # as "no chain" would let the writer start a FRESH chain over
-            # the top of one it could not see -- the single worst thing
-            # this writer could do.
+            # Refuse rather than return {}. An unparseable file that read
+            # as "nothing stored" would let a writer start FRESH over the
+            # top of what it could not see -- the single worst thing this
+            # file's writers could do.
             raise ChainError(
                 f"genesis_members.json is unparseable ({exc}); refusing to "
                 f"treat that as 'no chain'. Restore the file before writing."
             ) from exc
-        chain = raw.get("chain")
+        if not isinstance(raw, dict):
+            raise ChainError(
+                f"genesis_members.json holds a {type(raw).__name__}, not an object; refusing to "
+                f"treat that as 'no chain'. Restore the file before writing."
+            )
+        return raw
+
+    def _read_chain_locked(self) -> list[dict[str, Any]]:
+        """Caller holds the lock. `[]` means NO CHAIN -- not a broken one."""
+        from recto.bootloader.genesis_chain import ChainError
+
+        chain = self._read_members_body_locked().get("chain")
         if chain is None:
             return []
         if not isinstance(chain, list):
             raise ChainError(
                 f"the stored 'chain' is a {type(chain).__name__}, not a list"
             )
+        if not chain:
+            raise ChainError("the stored 'chain' holds no entries; refusing to treat that as 'no chain'. Restore the "
+                             "file before writing.")
         return list(chain)
 
     def append_genesis_chain_entry(self, record: dict[str, Any]) -> Any:
@@ -2897,9 +2935,13 @@ class StateStore(StateStoreBase):
             except Exception as exc:
                 raise ChainError(f"entry is not a well-formed record: {exc}") from exc
 
-            from recto.bootloader.genesis_chain import replay_state, resolve_seal_mark, seal_mark_of
+            from recto.bootloader.genesis_chain import (
+                replay_state, require_appendable, resolve_seal_mark, seal_mark_of,
+            )
 
             new_state = replay_state(entries)  # THE GUARD. Raises, and nothing below runs.
+            # A NEW entry answers to hard rule 14.7, whatever an older chain replays by.
+            require_appendable(entries)
             # Never append onto a chain that fell behind its seal: the STORED chain answers to the recorded mark (the
             # candidate is that chain plus one entry, so it extends whatever the mark accepted). A mark left in flight
             # by an earlier fault is collapsed to the side the stored chain matches, so the new in-flight mark below
@@ -2909,17 +2951,7 @@ class StateStore(StateStoreBase):
                                      self._read_seal_mark_locked())
 
             path = self._dir / "genesis_members.json"
-            body: dict[str, Any] = {}
-            if path.exists():
-                try:
-                    body = json.loads(path.read_text(encoding="utf-8"))
-                except Exception:
-                    # Unreachable: `_read_chain_locked` above already refused
-                    # on an unparseable file. Kept narrow rather than removed
-                    # because the two reads are not one read.
-                    body = {}
-            if not isinstance(body, dict):
-                body = {}
+            body = dict(self._read_members_body_locked())
             body["chain"] = candidate
             body["stored_at_unix"] = int(time.time())
             new_mark = seal_mark_of(entries, new_state)

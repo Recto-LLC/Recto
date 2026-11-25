@@ -26,6 +26,7 @@ import time
 from pathlib import Path
 
 from ..connections.manage import SecretSourceFactory, _default_secret_source
+from ..connections.types import require_text_fields
 from ..secrets.base import SecretNotFoundError
 from .types import (
     UserVaultEntryMeta,
@@ -107,6 +108,7 @@ def set_user_entry(
     """
     if not platform:
         raise ValueError("platform must be non-empty")
+    require_text_fields(platform=platform, display_name=display_name, category=category)
     subject = normalize_subject(subject)
     key = normalize_user_vault_key(key)
     now = int(time.time())

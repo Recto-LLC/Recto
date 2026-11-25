@@ -56,6 +56,36 @@ def signing_pair() -> tuple[Any, str]:
 
 
 class TestVerifySignature:
+    @pytest.mark.parametrize("algorithm", ["ed25519", "ecdsa-p256"])
+    def test_a_signature_over_the_decoded_payload_is_not_one_over_the_payload(self, algorithm: str) -> None:
+        """The payload's ASCII bytes are what is signed, for every caller: a signature over what those bytes decode to
+        is a signature over something else."""
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+
+        challenge = _b64u_encode(b"a registration challenge, 32 b..")
+        if algorithm == "ed25519":
+            key = Ed25519PrivateKey.generate()
+            pub = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+            sign = key.sign
+        else:
+            p256 = ec.generate_private_key(ec.SECP256R1())
+            n = p256.public_key().public_numbers()
+            pub = n.x.to_bytes(32, "big") + n.y.to_bytes(32, "big")
+
+            def sign(m: bytes) -> bytes:
+                r, s = decode_dss_signature(p256.sign(m, ec.ECDSA(hashes.SHA256())))
+                return r.to_bytes(32, "big") + s.to_bytes(32, "big")
+
+        def verifies(signed: bytes) -> bool:
+            return verify_signature(payload=challenge.encode("ascii"), signature_b64u=_b64u_encode(sign(signed)),
+                                    public_key_b64u=_b64u_encode(pub), algorithm=algorithm)
+
+        assert verifies(challenge.encode("ascii"))
+        assert not verifies(_b64u_decode(challenge))
+
     def test_valid_signature_returns_true(
         self, signing_pair: tuple[Any, str]
     ) -> None:

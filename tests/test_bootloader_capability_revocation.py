@@ -533,6 +533,20 @@ class TestRevocationsEndpoint:
 
 
 class TestSecretReadHonorsRevocation:
+    def test_a_read_with_no_store_to_ask_is_refused(self, gate_server, monkeypatch):
+        """Nothing is known not to be revoked when there is no store: a reusable grant is refused like any other."""
+        from recto.bootloader.server import BootloaderHandler
+
+        ctx = gate_server
+        read = (f"{ctx['base_url']}/v0.4/secrets/read", {
+            "capability_jws": _mint_jws(_starter_claims(jti="cap_no_store"), ctx["priv_int"]),
+            "service": "consumer-app", "secret_name": "STRIPE_KEY",
+        })
+        assert _http_post_json(*read)[0] == 200
+        monkeypatch.setattr(BootloaderHandler.config, "state", None)
+        status, body = _http_post_json(*read)
+        assert status == 503 and body["error"] == "state_store_not_configured", body
+
     def test_revoked_via_endpoint_blocks_secret_read(self, gate_server):
         """Revoke a JTI via the new endpoint, then attempt to use that
         JWT for /v0.4/secrets/read -- should be 401."""

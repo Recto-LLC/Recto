@@ -32,16 +32,16 @@ else
         <p class="uv-title">
             @if (grant)
             {
-                <span>Let @AgentLabel() use your <code>@keyLabel</code> key?</span>
+                <span>Let <CardText Value="@AgentLabel()" /> use your <code><CardText Value="@keyLabel" /></code> key?</span>
             }
             else
             {
-                <span>Stop @AgentLabel() using your <code>@keyLabel</code> key?</span>
+                <span>Stop <CardText Value="@AgentLabel()" /> using your <code><CardText Value="@keyLabel" /></code> key?</span>
             }
         </p>
         @if (!string.IsNullOrEmpty(_model.Purpose))
         {
-            <p class="uv-ask">The service says: <q>@_model.Purpose</q></p>
+            <p class="uv-ask">The service says: <q><CardText Value="@_model.Purpose" /></q></p>
         }
         else if (!grant)
         {
@@ -64,7 +64,7 @@ else
                         <div class="uv-v">
                             @if (row.Field == "agent_handle" && !string.IsNullOrEmpty(_model.AgentName))
                             {
-                                <div>@_model.AgentName <span class="uv-claim">named by the service</span></div>
+                                <div><CardText Value="@_model.AgentName" /> <span class="uv-claim">named by the service</span></div>
                             }
                             @if (row.IsHandle)
                             {
@@ -79,7 +79,7 @@ else
                             }
                             else
                             {
-                                <span>@row.Value</span>
+                                <span><CardText Value="@row.Value" /></span>
                             }
                             @if (row.Field == "not_after" && grant)
                             {
@@ -122,7 +122,7 @@ else
             <div class="rec-btn-row">
                 @if (rows is not null)
                 {
-                    <button class="rec-btn @(grant ? "rec-btn-approve" : "rec-btn-deny uv-btn-stop")" @onclick="ApproveAsync">
+                    <button class="rec-btn @(grant ? "rec-btn-approve" : "rec-btn-deny uv-btn-stop")" disabled="@Held" @onclick="ApproveAsync">
                         @(grant ? "Approve" : "Stop it")
                     </button>
                 }
@@ -153,6 +153,8 @@ else
     [Parameter, EditorRequired] public string PairedBootloaderId { get; set; } = string.Empty;
     /// <summary>The phone's identity key alias (the biometric-gated key the grant verifies against).</summary>
     [Parameter, EditorRequired] public string IdentityKeyAlias { get; set; } = string.Empty;
+    /// <summary>The card came to where it stands a moment ago: it takes no signature yet.</summary>
+    [Parameter] public bool Held { get; set; }
     /// <summary>Called once the card is resolved, so Home re-polls; carries a line for the status area, or null.</summary>
     [Parameter] public EventCallback<string?> OnResolved { get; set; }
 
@@ -203,7 +205,7 @@ else
 
     private async Task ApproveAsync()
     {
-        if (_model is null) return;
+        if (_model is null || Held) return;
         _error = null;
         _busy = true;
         _busyText = "Awaiting biometric approval...";

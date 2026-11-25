@@ -41,6 +41,8 @@ import threading
 import time
 import types
 import uuid
+from collections import deque
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -63,6 +65,7 @@ from recto.bootloader import (
     UnknownPhoneError,
 )
 from recto import __version__
+from recto.connections.types import MetadataUnreadableError
 from recto.bootloader.sessions import (
     SUPPORTED_ALGORITHMS,
     build_session_issuance_payload,
@@ -127,6 +130,85 @@ MAX_JSON_BODY_BYTES = 1024 * 1024
 
 # Seconds a connection may sit idle on a read or a write before it closes.
 REQUEST_SOCKET_TIMEOUT_SECONDS = 30
+
+# THE CARD QUEUE'S CAPS. A phone's attention is the authority plane's scarcest thing (hard rule 9), so one agent holds
+# at most this many open cards on one phone for one signed subject - a platform that asks for many people and agents
+# under one agent id is not refused for all of them by one - and all agents together at most this many. A card that is
+# answered, withdrawn or expired no longer counts; the bootloader's own cards (an owner slot, the top plane) count
+# toward the phone's total and are never refused by it. Both are settings (create_server); they are limits, never off.
+MAX_OPEN_CARDS_PER_AGENT = 12
+MAX_OPEN_CARDS_PER_PHONE = 40
+
+# A subject with no open card on a phone whose total is met is still heard, up to this many past it.
+OPEN_CARDS_RESERVE = 8
+
+# One agent asks for one signed subject at most this many times a minute. Only an ask that reaches the phone counts.
+MAX_CARD_RAISES_PER_MINUTE = 30
+
+# A card with less life than this is refused: it would leave the queue before a person has read it.
+MIN_CARD_LIFE_SECONDS = 30
+
+# The longest a card's fields may be, in characters (and a list's or a limit table's entries). The phone shows a
+# purpose whole, a part at a time, so its length is a person's reading time.
+MAX_CARD_PURPOSE_CHARS = 2000
+MAX_CARD_DESCRIPTION_CHARS = 16000
+MAX_CARD_TEXT_CHARS = 512
+MAX_CARD_URL_CHARS = 2048
+MAX_CARD_LIST_ITEMS = 128
+
+# The body fields the phone receives as text. Each is a string; the optional ones may also be absent or null.
+CARD_TEXT_FIELDS = frozenset({
+    "service", "secret", "operation_description", "candidate_profile_id", "kind", "display_name", "new_phone_id",
+    "phone_id_to_revoke",
+})
+CARD_OPTIONAL_TEXT_FIELDS = frozenset({"theme_hint", "scim_provider", "new_phone_label", "revoker_label"})
+
+
+def _is_wire_text(value: Any) -> bool:
+    """True when every string in ``value``, at any depth and names included, encodes as UTF-8. A string that does not
+    (half of a surrogate pair) is one the phone cannot read."""
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            try:
+                item.encode("utf-8")
+            except UnicodeEncodeError:
+                return False
+        elif isinstance(item, dict):
+            stack.extend(item.keys())
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    return True
+
+
+class CardRaises:
+    """The asks of the last minute that reached a phone, by (agent, signed subject). In memory only; the caller holds
+    the card queue's lock. It holds no more than the queue's own caps let through in a minute."""
+
+    WINDOW_SECONDS = 60.0
+
+    def __init__(self, limit: int = MAX_CARD_RAISES_PER_MINUTE, clock: Callable[[], float] = time.monotonic) -> None:
+        self._limit = limit
+        self._clock = clock
+        self._at: dict[tuple[str | None, str | None], deque[float]] = {}
+
+    def wait_seconds(self, key: tuple[str | None, str | None]) -> int:
+        """0 when another ask is admitted now, else the whole seconds until one is."""
+        now = self._clock()
+        for k, at in list(self._at.items()):
+            while at and at[0] <= now - self.WINDOW_SECONDS:
+                at.popleft()
+            if not at:
+                del self._at[k]
+        at = self._at.get(key)
+        if at is None or len(at) < self._limit:
+            return 0
+        return max(1, int(at[0] + self.WINDOW_SECONDS - now) + 1)
+
+    def note(self, key: tuple[str | None, str | None]) -> None:
+        self._at.setdefault(key, deque()).append(self._clock())
 
 
 class RequestBodyTooLargeError(Exception):
@@ -506,6 +588,11 @@ class BootloaderConfig:
     # paired-phone envelope is checked (development convenience —
     # production deployments MUST set this).
     capability_operator_pubkey: bytes | None = None
+    # The card queue's caps (MAX_OPEN_CARDS_PER_AGENT / _PER_PHONE above).
+    max_open_cards_per_agent: int = MAX_OPEN_CARDS_PER_AGENT
+    max_open_cards_per_phone: int = MAX_OPEN_CARDS_PER_PHONE
+    # The asks of the last minute (MAX_CARD_RAISES_PER_MINUTE); create_server starts it empty.
+    card_raises: CardRaises = CardRaises()
     # Default TTL for the resolved CapabilityResult. After resolution,
     # the agent has this long to poll the result endpoint before the
     # JWT is purged. 600s (10 min) is generous for synchronous chat-
@@ -562,13 +649,9 @@ class BootloaderConfig:
     # so the phone can show the app's icon + name + description at
     # the top of every approval card.
     #
-    # Lookup order in the queue handlers:
-    #   1. cap_agent_id when set (capability_request flow) -- the
-    #      X-Recto-Agent-Id header value identifies which app sent
-    #      the request.
-    #   2. service when cap_agent_id is None (other phone-rendered
-    #      request kinds) -- the supervised child's service name from
-    #      service.yaml is the app identifier for non-capability flows.
+    # The queue handlers look the entry up by the AUTHENTICATED agent id
+    # (the X-Recto-Agent-Id header the agent's token was checked for) and
+    # by nothing the request body says.
     #
     # Empty / unset means no AppContext is injected; PendingRequests
     # carry app_context=None and the phone renders an "Unknown app"
@@ -736,10 +819,10 @@ class BootloaderConfig:
     derived_bootloader_id: str | None = None
 
     # Signed-poll enforcement mode (2026-08-13, phone_id split). Gates
-    # the possession-of-phone_id read surfaces (GET /v0.4/pending and
-    # POST /v0.4/manage/push_token). GET /v0.4/manage/phones and
-    # owner-slot cards on /v0.4/pending need a verified poll signature
-    # in EVERY mode (hard rule 14.2):
+    # the possession-of-phone_id read surface (GET /v0.4/pending). GET
+    # /v0.4/manage/phones, POST /v0.4/manage/push_token and owner-slot
+    # cards on /v0.4/pending need a verified poll signature in EVERY
+    # mode (hard rule 14.2):
     #   - "off":      no signature processing at all (pre-split shape).
     #   - "advisory": DEFAULT. All polls allowed; each one is logged as
     #                 signed-valid / signed-invalid / unsigned (verdicts
@@ -1145,6 +1228,9 @@ class BootloaderHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "registry_busy", "detail": str(e)})
         except top_plane.TopPlaneRefused as e:
             self._send_json(HTTPStatus(e.status), {"error": e.name, "detail": e.detail})
+        except MetadataUnreadableError as e:
+            print(f"[bootloader] metadata unreadable on {url.path}", flush=True)
+            self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "metadata_unreadable", "detail": str(e)})
         except BootloaderError as e:
             # The class only: a refusal's detail can quote the request's
             # claims; the caller reads it in the answer, the log never does.
@@ -1264,6 +1350,9 @@ class BootloaderHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "registry_busy", "detail": str(e)})
         except top_plane.TopPlaneRefused as e:
             self._send_json(HTTPStatus(e.status), {"error": e.name, "detail": e.detail})
+        except MetadataUnreadableError as e:
+            print(f"[bootloader] metadata unreadable on {url.path}", flush=True)
+            self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "metadata_unreadable", "detail": str(e)})
         except BootloaderError as e:
             # The class only: a refusal's detail can quote the request's
             # claims; the caller reads it in the answer, the log never does.
@@ -2373,6 +2462,15 @@ class BootloaderHandler(BaseHTTPRequestHandler):
             # server error.
             return False
 
+    def _send_unsigned_read(self, path: str) -> None:
+        """401 for a surface that answers only the phone's poll key: _required when no signature was sent, _invalid
+        when one was."""
+        sent = bool((self.headers.get(POLL_SIG_HEADER) or "").strip())
+        self._send_json(HTTPStatus.UNAUTHORIZED, {
+            "error": "poll_signature_invalid" if sent else "poll_signature_required",
+            "detail": f"{path} answers only a request signed by the phone's poll key",
+        })
+
     def _send_denial_unsigned(self) -> None:
         """401 for a denial without a fresh poll-key signature: _required when none was sent, _invalid when one was."""
         sent = any((self.headers.get(h) or "").strip() for h in (POLL_SIG_HEADER, POLL_SIG_TS_HEADER))
@@ -2392,10 +2490,10 @@ class BootloaderHandler(BaseHTTPRequestHandler):
 
         Wire shape matches the phone app's PushTokenUpdateRequest:
         ``{phone_id, push_token, push_platform}`` ->
-        ``{updated, phone_id}``. Same auth posture as the pending-fetch
-        surface (possession of the registered phone_id); the token is
-        wake-routing metadata, not authority -- a forged update can at
-        worst misroute delivery hints, never request content.
+        ``{updated, phone_id}``. Answered only for a request signed by the
+        phone's poll key, in every signed_poll_mode (hard rule 14.2): the
+        token is wake-routing metadata, and only the phone says where its
+        wakes go.
         """
         cfg = self.config
         if cfg.state is None:
@@ -2413,6 +2511,9 @@ class BootloaderHandler(BaseHTTPRequestHandler):
         # Signed-poll gate (phone_id split): possession of the phone_id
         # string stops being the credential once required-mode flips.
         if not self._check_poll_signature(phone, "/v0.4/manage/push_token"):
+            return
+        if not self._poll_signature_valid(phone, "/v0.4/manage/push_token"):
+            self._send_unsigned_read("/v0.4/manage/push_token")
             return
         # The push fields of a phone the store STILL holds - never an upsert. A phone displaced or revoked between the
         # read above and this write stays removed (the upsert this replaced put it back in its slot).
@@ -2481,7 +2582,7 @@ class BootloaderHandler(BaseHTTPRequestHandler):
         if not self._check_poll_signature(phone, "/v0.4/pending"):
             return
         pending = cfg.state.list_pending_for_phone(phone_id)
-        pending = [self._restamp_grant_window(p) for p in pending]
+        pending = [p for p in map(self._restamp_grant_window, pending) if p is not None]
         # A DEAD CARD IS WITHDRAWN, NOT SERVED (2026-09-21, operator: "I don't
         # like that expired cards are sitting in the phone queue"). A
         # capability card has two clocks: ttl_seconds bounds how long it may
@@ -2496,6 +2597,7 @@ class BootloaderHandler(BaseHTTPRequestHandler):
         # had to). Restamping runs first, so a grant_ttl card's window is
         # judged AFTER card-open sets it, never on the queue-time claims.
         pending = [p for p in pending if not self._withdraw_if_authority_expired(p)]
+        pending = [p for p in pending if self._pending_wire_or_none(p) is not None]
         # THE OWNER SLOTS: an owner-slot approval card is served only to a read whose poll signature verifies, in every
         # mode - an unsigned read names a ref anyone knows, and the card's id would let a stranger work at it.
         if not self._poll_signature_valid(phone, "/v0.4/pending"):
@@ -2503,7 +2605,7 @@ class BootloaderHandler(BaseHTTPRequestHandler):
             pending = [p for p in pending if p.request_id not in owner_cards
                        and not str(p.secret).startswith("top-plane:")]
         body: dict[str, Any] = {
-            "requests": [self._pending_to_wire(p) for p in pending],
+            "requests": [self._pending_wire_or_none(p) for p in pending],
         }
         # THE GRANT REQUESTS (hard rule 15.z): held in memory, served only to the phone they ring, inside the same
         # server-signed envelope as every other card. Only a read whose poll signature verifies sees them - the
@@ -2554,29 +2656,70 @@ class BootloaderHandler(BaseHTTPRequestHandler):
         )
         return mint_jws(claims, cfg.devices_pair_signing_key)
 
+    @staticmethod
+    def _signed_claims(req) -> dict[str, Any] | None:
+        """A capability card's claims as they will be signed, or None when they cannot be read."""
+        if req.kind != "capability_request" or not req.cap_payload_b64:
+            return None
+        try:
+            pad = "=" * (-len(req.cap_payload_b64) % 4)
+            claims = json.loads(base64.urlsafe_b64decode(req.cap_payload_b64 + pad))
+        except Exception:  # noqa: BLE001 - unreadable claims are not a verdict
+            return None
+        return claims if isinstance(claims, dict) else None
+
+    def _authority_expired(self, req) -> bool:
+        claims = self._signed_claims(req)
+        try:
+            return claims is not None and int(claims["exp"]) <= int(time.time())
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return False   # no window to judge: the phone shows no such card whole, and refuses it
+
     def _withdraw_if_authority_expired(self, req) -> bool:
         """True (and the request is TAKEN off the queue) when a capability
         card's signed authority has already expired. Other kinds, and cards
         whose claims cannot be read, are left alone: withdrawing is only ever
         done on a verdict, never on a parse failure."""
-        cfg = self.config
-        if req.kind != "capability_request" or not req.cap_payload_b64 or cfg.state is None:
+        if self.config.state is None or not self._authority_expired(req):
             return False
-        try:
-            pad = "=" * (-len(req.cap_payload_b64) % 4)
-            payload = json.loads(base64.urlsafe_b64decode(req.cap_payload_b64 + pad))
-            exp = int(payload["exp"])
-        except Exception:  # noqa: BLE001 - unreadable claims are not a verdict
-            return False
-        if exp > int(time.time()):
-            return False
-        cfg.state.take_pending(req.request_id)
+        with self._CARD_QUEUE_LOCK:
+            self._withdraw(req)
+        return True
+
+    def _withdraw(self, req) -> None:
+        """Take a card whose authority ran out off the queue; the caller holds the queue's lock."""
+        self.config.state.take_pending(req.request_id)
         logging.getLogger("recto.bootloader.pending").info(
             # Recto's own handles only: the card's exp is its claim (hard rule 15.ab).
             "card withdrawn: authority expired request_id=%s phone_id=%s",
             req.request_id, req.phone_id,
         )
-        return True
+
+    _UNSERVED_SAID: set[str] = set()   # the ids already logged, bounded
+
+    def _pending_wire_or_none(self, req) -> dict[str, Any] | None:
+        """One card as the phone receives it, or None for a stored one that cannot be written as JSON: it is left out,
+        said once in the log, and the others are served. It leaves the queue as any card does, and holds no place in
+        the caps meanwhile: no person can answer it."""
+        try:
+            wire = self._pending_to_wire(req)
+            json.dumps(wire, allow_nan=False)
+        except Exception as exc:  # noqa: BLE001 - whatever is wrong with one card is that card's
+            said = self._UNSERVED_SAID
+            if req.request_id not in said:
+                if len(said) >= 1024:
+                    said.clear()
+                said.add(req.request_id)
+                logging.getLogger("recto.bootloader.pending").warning(
+                    "card not served: unreadable request_id=%s (%s)", req.request_id, type(exc).__name__)
+            return None
+        return wire
+
+    def _take_card(self, request_id: str) -> PendingRequest | None:
+        """Take an answered card off the queue. Under the queue's lock, so a card whose window is being stamped is never
+        put back after it was answered."""
+        with self._CARD_QUEUE_LOCK:
+            return self.config.state.take_pending(request_id)
 
     def _restamp_grant_window(self, req):
         """Re-stamp a queued capability_request's grant window at
@@ -2607,6 +2750,26 @@ class BootloaderHandler(BaseHTTPRequestHandler):
             or not req.cap_payload_b64
         ):
             return req
+        with self._CARD_QUEUE_LOCK:
+            # Two reads can arrive together: the first stamps, the second is
+            # served what the first stamped. A card answered in between is
+            # never put back.
+            held = next((p for p in self.config.state.list_pending_for_phone(req.phone_id)
+                         if p.request_id == req.request_id), None)
+            if held is None or held.cap_window_stamped_at_unix is not None:
+                return held
+            try:
+                return self._stamp_grant_window(held)
+            except BootloaderError:
+                # A window that cannot be stamped refuses this card, by name to its agent, and no other.
+                self.config.state.take_pending(held.request_id)
+        logging.getLogger("recto.bootloader.pending").warning(
+            "card withdrawn: window not stamped request_id=%s phone_id=%s", held.request_id, held.phone_id)
+        self._store_capability_result(held, status="denied", capability_jws=None, reason="grant_window_unreadable")
+        return None
+
+    def _stamp_grant_window(self, req):
+        """The re-stamp itself; the caller holds the card queue's lock."""
         import base64 as _base64
         import json as _json
         from dataclasses import replace as _replace
@@ -2640,8 +2803,7 @@ class BootloaderHandler(BaseHTTPRequestHandler):
             payload_hash_b64u=payload_hash_b64u,
             cap_window_stamped_at_unix=now,
         )
-        self.config.state.add_pending(updated)
-        return updated
+        return updated if self.config.state.replace_pending(updated) else None
 
     # ------------------------------------------------------------------
     # GET /v0.4/manage/phones?phone_id=<self>
@@ -2676,11 +2838,7 @@ class BootloaderHandler(BaseHTTPRequestHandler):
         # Rule 14.2 reads, ahead of the flip: the list of phones answers only a read whose poll signature verifies,
         # in every signed_poll_mode, as an owner card does.
         if not self._poll_signature_valid(requester, "/v0.4/manage/phones"):
-            sent = bool((self.headers.get(POLL_SIG_HEADER) or "").strip())
-            self._send_json(HTTPStatus.UNAUTHORIZED, {
-                "error": "poll_signature_invalid" if sent else "poll_signature_required",
-                "detail": "/v0.4/manage/phones answers only a read signed by the phone's poll key",
-            })
+            self._send_unsigned_read("/v0.4/manage/phones")
             return
         # THE MEMBER PLANE: a member lists no business phone (and no other member).
         if requester.slot not in SLOTS:
@@ -2916,7 +3074,7 @@ class BootloaderHandler(BaseHTTPRequestHandler):
         elif any(request_id in (r.get("cards") or {}) for r in cfg.state.list_top_plane_records()):
             # A top-plane card whose act expired, or whose reset was cancelled or completed, is answered by name and
             # never falls through to the generic single_sign path.
-            cfg.state.take_pending(request_id)
+            self._take_card(request_id)
             self._send_json(HTTPStatus.GONE, {"error": "top_plane_card_expired",
                                               "detail": "this act or reset is closed; start it again"})
             return
@@ -2942,7 +3100,7 @@ class BootloaderHandler(BaseHTTPRequestHandler):
             if not self._poll_signature_valid(phone, f"/v0.4/respond/{request_id}"):
                 self._send_denial_unsigned()
                 return
-            if cfg.state.take_pending(request_id) is None:
+            if self._take_card(request_id) is None:
                 raise PendingRequestNotFoundError(
                     f"request_id {request_id!r} not found"
                 )
@@ -3018,7 +3176,7 @@ class BootloaderHandler(BaseHTTPRequestHandler):
             # Not an answer from the paired phone: nothing is resolved and the
             # card stays on the queue.
             raise BootloaderError("approved-response signature invalid")
-        if cfg.state.take_pending(request_id) is None:
+        if self._take_card(request_id) is None:
             raise PendingRequestNotFoundError(
                 f"request_id {request_id!r} not found"
             )
@@ -4264,6 +4422,176 @@ class BootloaderHandler(BaseHTTPRequestHandler):
                       reason=reason)
 
     # ------------------------------------------------------------------
+    # THE CARD QUEUE - the one way an agent's card reaches a phone
+    # ------------------------------------------------------------------
+
+    _CARD_QUEUE_LOCK = threading.Lock()
+
+    def _refuse_card(self, agent_id: str, body: dict[str, Any], claims: Any = None) -> bool:
+        """True after a card was refused by name: one an auth-only agent may not raise (hard rule 15.p), one with a field
+        the phone could not read as text, or one with a field past its length. ``claims`` is the typed claims set when
+        the card carries one."""
+        if agent_id in self.config.capability_agent_auth_only:
+            self._send_json(HTTPStatus.FORBIDDEN, {
+                "error": "agent_auth_only",
+                "detail": f"agent {agent_id!r} authenticates to a substrate only and may raise no capability card",
+            })
+            return True
+
+        def too_long(field: str, limit: int, what: str = "characters") -> bool:
+            self._send_json(HTTPStatus.BAD_REQUEST, {
+                "error": "card_field_too_long", "field": field, "limit": limit,
+                "detail": f"{field} is past {limit} {what}; a card is read by a person",
+            })
+            return True
+
+        for name, value in body.items():
+            wrong_type = (name in CARD_TEXT_FIELDS and not isinstance(value, str)) or (
+                name in CARD_OPTIONAL_TEXT_FIELDS and value is not None and not isinstance(value, str))
+            if wrong_type or not _is_wire_text(name) or not _is_wire_text(value):
+                self._send_json(HTTPStatus.BAD_REQUEST, {
+                    "error": "card_field_not_text", "field": str(name)[:64].encode("utf-8", "replace").decode("utf-8"),
+                    "detail": "a card's fields reach the phone as text: each is a string that encodes as UTF-8",
+                })
+                return True
+            limit = MAX_CARD_DESCRIPTION_CHARS if name == "operation_description" else MAX_CARD_TEXT_CHARS
+            if isinstance(value, str) and len(value) > limit:
+                return too_long(str(name)[:64], limit)
+        actor = body.get("actor")
+        for name, value in (actor.items() if isinstance(actor, dict) else ()):
+            limit = MAX_CARD_URL_CHARS if name == "actor_icon_url" else MAX_CARD_TEXT_CHARS
+            if isinstance(value, str) and len(value) > limit:
+                return too_long(f"actor.{str(name)[:64]}", limit)
+        if claims is None:
+            return False
+        if isinstance(claims.purpose, str) and len(claims.purpose) > MAX_CARD_PURPOSE_CHARS:
+            return too_long("claims.purpose", MAX_CARD_PURPOSE_CHARS)
+        cap, scope, limits = claims.cap, claims.cap.scope, claims.cap.limits
+        for name, value in (
+            ("iss", claims.iss), ("sub", claims.sub), ("jti", claims.jti), ("parent_cap", claims.parent_cap),
+            ("parent_profile", claims.parent_profile), ("cap.registry_version", cap.registry_version),
+            ("cap.scope.create_for_owner", scope.create_for_owner), ("cap.scope.chat_room_id", scope.chat_room_id),
+            ("cap.scope.target_user_id", scope.target_user_id), ("cap.scope.pairing_code", scope.pairing_code),
+            ("cap.scope.payload_sha256", scope.payload_sha256),
+        ):
+            if isinstance(value, str) and len(value) > MAX_CARD_TEXT_CHARS:
+                return too_long(f"claims.{name}", MAX_CARD_TEXT_CHARS)
+        for name, items in (
+            ("aud", claims.aud), ("cap.groups", cap.groups), ("cap.allow_actions", cap.allow_actions),
+            ("cap.deny_actions", cap.deny_actions), ("cap.scope.env", scope.env),
+            ("cap.scope.services", scope.services), ("cap.scope.repos", scope.repos),
+            ("cap.limits.per_hour", list(limits.per_hour)), ("cap.limits.per_day", list(limits.per_day)),
+            ("cap.limits.per_session", list(limits.per_session)),
+        ):
+            if len(items) > MAX_CARD_LIST_ITEMS:
+                return too_long(f"claims.{name}", MAX_CARD_LIST_ITEMS, "entries")
+            if any(isinstance(i, str) and len(i) > MAX_CARD_TEXT_CHARS for i in items):
+                return too_long(f"claims.{name}", MAX_CARD_TEXT_CHARS)
+        return False
+
+    def _same_card(self, held: PendingRequest, req: PendingRequest) -> bool:
+        """True when ``held`` already asks exactly what ``req`` asks: one agent, one kind, one signed payload. A card
+        whose window the bootloader stamps (``cap_grant_ttl_seconds``) is compared without that window, which the
+        agent never chose."""
+        if (held.kind, held.cap_agent_id) != (req.kind, req.cap_agent_id):
+            return False
+        if held.cap_payload_b64 is None or held.cap_header_b64 != req.cap_header_b64:
+            return False
+        if held.cap_payload_b64 == req.cap_payload_b64:
+            return True
+        if held.cap_grant_ttl_seconds is None or held.cap_grant_ttl_seconds != req.cap_grant_ttl_seconds:
+            return False
+        window = ("iat", "nbf", "exp")
+        mine, theirs = self._signed_claims(held), self._signed_claims(req)
+        return mine is not None and theirs is not None and (
+            {k: v for k, v in mine.items() if k not in window} == {k: v for k, v in theirs.items() if k not in window})
+
+    def _signed_subject(self, req) -> str | None:
+        """The subject a card's claims sign, or None for a card that signs none (a profile's)."""
+        subject = (self._signed_claims(req) or {}).get("sub")
+        return subject if isinstance(subject, str) else None
+
+    def _open_cards(self, phone_id: str) -> list[PendingRequest]:
+        """The cards open on a phone; the caller holds the queue's lock. One whose authority ran out leaves the queue
+        here, whether or not the phone has polled since. A queued window that is a placeholder (stamped at card-open)
+        is not yet authority."""
+        cards = []
+        for card in self.config.state.list_pending_for_phone(phone_id):
+            placeholder = card.cap_grant_ttl_seconds is not None and card.cap_window_stamped_at_unix is None
+            if self._authority_expired(card) and not placeholder:
+                self._withdraw(card)
+            elif self._pending_wire_or_none(card) is not None:
+                cards.append(card)
+        return cards
+
+    def _card_life_seconds(self, req: PendingRequest) -> int:
+        """The seconds a card would live on the queue: its own, or its authority's when that ends first. A window
+        stamped at card-open has not begun."""
+        now = int(time.time())
+        life = req.expires_at_unix - now
+        if req.cap_grant_ttl_seconds is None:
+            exp = (self._signed_claims(req) or {}).get("exp")
+            if isinstance(exp, int):
+                life = min(life, exp - now)
+        return life
+
+    def _queue_agent_card(self, req: PendingRequest, answer: dict[str, Any]) -> None:
+        """Queue an agent's card and answer the request. ``answer`` is the response beside request_id and
+        expires_at_unix; a ``result_url`` in it is completed with the request id.
+
+        An identical card already open is answered with that card's id and ``status: already_open``, and raises no second
+        one; the phone is woken for it as for a new card, under the same spacing. Otherwise the caps apply, refused by
+        name with 429, each refusal naming its ``bound``: the agent's open cards for this signed subject, the phone's
+        total (a subject with no open card passes it by the reserve), and the asks of the last minute. A card with too
+        little life to be read is refused 400."""
+        cfg = self.config
+        life = self._card_life_seconds(req)
+        if life < MIN_CARD_LIFE_SECONDS:
+            self._send_json(HTTPStatus.BAD_REQUEST, {
+                "error": "card_life_too_short", "seconds": max(0, life), "minimum": MIN_CARD_LIFE_SECONDS,
+                "detail": f"a card lives at least {MIN_CARD_LIFE_SECONDS} seconds; a person has to read it",
+            })
+            return
+        key = (req.cap_agent_id, self._signed_subject(req))
+        refusal: dict[str, Any] | None = None
+        with self._CARD_QUEUE_LOCK:
+            held = self._open_cards(req.phone_id)
+            twin = next((p for p in held if self._same_card(p, req)), None)
+            mine = sum(1 for p in held if (p.cap_agent_id, self._signed_subject(p)) == key)
+            total = cfg.max_open_cards_per_phone + (OPEN_CARDS_RESERVE if mine == 0 else 0)
+            wait = cfg.card_raises.wait_seconds(key)
+            if wait:
+                refusal = {"error": "card_raise_rate_limit", "bound": "agent_subject_minute",
+                           "limit": MAX_CARD_RAISES_PER_MINUTE, "retry_after_seconds": wait,
+                           "detail": "this agent has asked its limit of times this minute for this subject; ask again "
+                                     f"in {wait} seconds"}
+            elif twin is None and mine >= cfg.max_open_cards_per_agent:
+                refusal = {"error": "agent_cards_open_limit", "bound": "agent_subject", "open": mine,
+                           "limit": cfg.max_open_cards_per_agent,
+                           "detail": "this agent already holds its limit of open cards on this phone for this subject; "
+                                     "ask again after one is answered or expires"}
+            elif twin is None and len(held) >= total:
+                refusal = {"error": "phone_cards_open_limit", "bound": "phone" if mine else "phone_reserve",
+                           "open": len(held), "limit": total,
+                           "detail": "this phone already holds its limit of open cards; ask again after one is "
+                                     "answered or expires"}
+            else:
+                cfg.card_raises.note(key)
+                if twin is None:
+                    cfg.state.add_pending(req)
+        if refusal is not None:
+            self._send_json(HTTPStatus.TOO_MANY_REQUESTS, refusal)
+            return
+        shown = twin or req
+        self._notify_push(shown)
+        body = dict(answer, request_id=shown.request_id, expires_at_unix=shown.expires_at_unix)
+        if "result_url" in body:
+            body["result_url"] += shown.request_id
+        if twin is not None:
+            body["status"] = "already_open"
+        self._send_json(HTTPStatus.CREATED, body)
+
+    # ------------------------------------------------------------------
     # POST /v0.4/capability/request  (Phase 5 Wave B)
     # ------------------------------------------------------------------
 
@@ -4351,11 +4679,7 @@ class BootloaderHandler(BaseHTTPRequestHandler):
                 {"error": "agent_auth_failed"},
             )
             return
-        if agent_id in cfg.capability_agent_auth_only:
-            self._send_json(HTTPStatus.FORBIDDEN, {
-                "error": "agent_auth_only",
-                "detail": f"agent {agent_id!r} authenticates to a substrate only and may raise no capability card",
-            })
+        if self._refuse_card(agent_id, body):
             return
         # Body shape
         phone_id = body.get("phone_id", "")
@@ -4425,15 +4749,22 @@ class BootloaderHandler(BaseHTTPRequestHandler):
         # keep the bootloader package free of recto.capability when
         # this endpoint is disabled.
         from recto.capability.jwt import (
+            _claims_to_dict,
             _dict_to_claims as _to_claims,
+            _require_claim_types,
             build_signing_input,
         )
         try:
             claims = _to_claims(claims_raw)
-        except (ValueError, KeyError) as exc:
+            # The claims as they will be signed have the types a verifier reads and the card shows: a null the
+            # encoder would drop is refused here, before a person sees a card that cannot be shown.
+            _require_claim_types(_claims_to_dict(claims))
+        except (ValueError, KeyError, TypeError, AttributeError, OverflowError) as exc:
             raise BootloaderError(
                 f"claims failed CapabilityClaims validation: {exc}"
             ) from exc
+        if self._refuse_card(agent_id, {}, claims):
+            return
         if reserved_reset_jti(claims.jti):
             self._send_json(HTTPStatus.FORBIDDEN, {
                 "error": "claims_jti_reserved",
@@ -4600,25 +4931,14 @@ class BootloaderHandler(BaseHTTPRequestHandler):
             raise BootloaderError(
                 f"capability_request construction failed: {exc}"
             ) from exc
-        # Phase 5 Wave C part 3: inject app_context. Look up by
-        # cap_agent_id first (capability_request flow); fall back to
-        # service name if no agent registration but a service one
-        # exists. None when no registration matches -- phone renders
-        # "Unknown app" warning banner.
-        app_ctx = (
-            cfg.principal_apps.get(agent_id)
-            or cfg.principal_apps.get(req.service)
-        )
+        # The app banner is the AUTHENTICATED agent's registration and no
+        # other: the body's service name is the requester's word. None when
+        # the agent has none -- the phone renders the "Unknown app" banner.
+        app_ctx = cfg.principal_apps.get(agent_id)
         if app_ctx is not None:
             from dataclasses import replace as _replace
             req = _replace(req, app_context=app_ctx)
-        cfg.state.add_pending(req)
-        self._notify_push(req)
-        self._send_json(HTTPStatus.CREATED, {
-            "request_id": req.request_id,
-            "expires_at_unix": req.expires_at_unix,
-            "result_url": f"/v0.4/capability/result/{req.request_id}",
-        })
+        self._queue_agent_card(req, {"result_url": "/v0.4/capability/result/"})
 
     # ------------------------------------------------------------------
     # POST /v0.4/devices/pair  (Phase H end-user device pairing relay,
@@ -5234,6 +5554,8 @@ class BootloaderHandler(BaseHTTPRequestHandler):
                 {"error": "agent_auth_failed"},
             )
             return
+        if self._refuse_card(agent_id, body):
+            return
         # Body shape — strict, with clear field-level errors so a buggy
         # caller can diagnose without a debugger.
         phone_id = body.get("phone_id", "")
@@ -5389,19 +5711,12 @@ class BootloaderHandler(BaseHTTPRequestHandler):
         )
         # AppContext injection — phone shows the requesting app's
         # branding at the top of the approval card.
-        app_ctx = (
-            cfg.principal_apps.get(agent_id)
-            or cfg.principal_apps.get(req.service)
-        )
+        app_ctx = cfg.principal_apps.get(agent_id)
         if app_ctx is not None:
             req = _replace(req, app_context=app_ctx)
-        cfg.state.add_pending(req)
-        self._notify_push(req)
-        self._send_json(HTTPStatus.CREATED, {
-            "request_id": req.request_id,
+        self._queue_agent_card(req, {
             "candidate_profile_id": candidate_profile_id,
-            "expires_at_unix": req.expires_at_unix,
-            "result_url": f"/v0.4/profile/result/{req.request_id}",
+            "result_url": "/v0.4/profile/result/",
         })
 
     # ------------------------------------------------------------------
@@ -5505,6 +5820,8 @@ class BootloaderHandler(BaseHTTPRequestHandler):
                 HTTPStatus.UNAUTHORIZED,
                 {"error": "agent_auth_failed"},
             )
+            return
+        if self._refuse_card(agent_id, body):
             return
         # Body shape validation
         if not profile_id or not isinstance(profile_id, str):
@@ -5638,20 +5955,13 @@ class BootloaderHandler(BaseHTTPRequestHandler):
             cap_agent_id=agent_id,
         )
         # AppContext injection
-        app_ctx = (
-            cfg.principal_apps.get(agent_id)
-            or cfg.principal_apps.get(req.service)
-        )
+        app_ctx = cfg.principal_apps.get(agent_id)
         if app_ctx is not None:
             req = _replace(req, app_context=app_ctx)
-        cfg.state.add_pending(req)
-        self._notify_push(req)
-        self._send_json(HTTPStatus.CREATED, {
-            "request_id": req.request_id,
+        self._queue_agent_card(req, {
             "profile_id": profile_id,
             "new_phone_id": new_phone_id,
-            "expires_at_unix": req.expires_at_unix,
-            "result_url": f"/v0.4/profile/add-device-result/{req.request_id}",
+            "result_url": "/v0.4/profile/add-device-result/",
         })
 
     # ------------------------------------------------------------------
@@ -5737,6 +6047,8 @@ class BootloaderHandler(BaseHTTPRequestHandler):
                 HTTPStatus.UNAUTHORIZED,
                 {"error": "agent_auth_failed"},
             )
+            return
+        if self._refuse_card(agent_id, body):
             return
         if not profile_id or not isinstance(profile_id, str):
             raise BootloaderError("profile_id required in URL path")
@@ -5914,20 +6226,13 @@ class BootloaderHandler(BaseHTTPRequestHandler):
             cap_payload_b64=cap_payload_b64,
             cap_agent_id=agent_id,
         )
-        app_ctx = (
-            cfg.principal_apps.get(agent_id)
-            or cfg.principal_apps.get(req.service)
-        )
+        app_ctx = cfg.principal_apps.get(agent_id)
         if app_ctx is not None:
             req = _replace(req, app_context=app_ctx)
-        cfg.state.add_pending(req)
-        self._notify_push(req)
-        self._send_json(HTTPStatus.CREATED, {
-            "request_id": req.request_id,
+        self._queue_agent_card(req, {
             "profile_id": profile_id,
             "phone_id_to_revoke": phone_id_to_revoke,
-            "expires_at_unix": req.expires_at_unix,
-            "result_url": f"/v0.4/profile/revoke-device-result/{req.request_id}",
+            "result_url": "/v0.4/profile/revoke-device-result/",
         })
 
     # ------------------------------------------------------------------
@@ -7046,8 +7351,13 @@ class BootloaderHandler(BaseHTTPRequestHandler):
         # StateStore's persistent revocation list (revocations.json
         # under the state dir). Auto-purges expired entries on every
         # call so revocations don't accumulate past their original JWT
-        # exp.
-        if cfg.state is not None and cfg.state.is_revoked(claims.jti):
+        # exp. With no store to ask, nothing is known not to be revoked.
+        if cfg.state is None:
+            self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {
+                "error": "state_store_not_configured",
+            })
+            return
+        if cfg.state.is_revoked(claims.jti):
             self._send_json(HTTPStatus.UNAUTHORIZED, {
                 "error": "capability_revoked",
                 "jti": claims.jti,
@@ -7090,11 +7400,6 @@ class BootloaderHandler(BaseHTTPRequestHandler):
         # 6. Spend a single-use capability, last: a read refused above never
         # spends it. The spend is atomic in the state store.
         if claims.max_uses == 1:
-            if cfg.state is None:
-                self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {
-                    "error": "state_store_not_configured",
-                })
-                return
             spent = cfg.state.consume_single_use_capability(RevocationEntry(
                 jti=claims.jti,
                 revoked_at_unix=int(time.time()),
@@ -7448,8 +7753,9 @@ class BootloaderHandler(BaseHTTPRequestHandler):
         In order, each a named refusal: the JWS verifies against the
         operator's key, names this bootloader and is inside its window
         (``grant_signature_invalid``); its jti is not yet spent
-        (``grant_replayed``); then the jti is SPENT, so a grant that fails
-        any later check is dead too; then ``verify_act_grant`` (one
+        (``grant_replayed``); the metadata can be read
+        (``metadata_unreadable``); then the jti is SPENT, so a grant that
+        fails any later check is dead too; then ``verify_act_grant`` (one
         connections action, single use, the record's fingerprint and
         purpose, the service in scope); then the row exists
         (``connection_not_found``); then the act. Each act and refusal
@@ -7514,6 +7820,10 @@ class BootloaderHandler(BaseHTTPRequestHandler):
         if cfg.state.is_revoked(claims.jti):
             refuse(HTTPStatus.FORBIDDEN, "grant_replayed", "jti already spent or revoked", record, claims.jti)
             return
+        # The metadata is read before the grant is spent: a store that cannot be read refuses the act by name, and the
+        # person's grant is still theirs when it is restored.
+        path = _Path(cfg.connections_path)
+        get_connection_meta(path, record.service, record.key)
         now = int(time.time())
         cfg.state.add_revocation(RevocationEntry(
             jti=claims.jti,
@@ -7528,7 +7838,6 @@ class BootloaderHandler(BaseHTTPRequestHandler):
             refuse(HTTPStatus.FORBIDDEN, e.name, e.detail, record, claims.jti)
             return
 
-        path = _Path(cfg.connections_path)
         if record.verb != "set" and get_connection_meta(path, record.service, record.key) is None:
             refuse(HTTPStatus.NOT_FOUND, "connection_not_found", "no such connection", record, claims.jti)
             return
@@ -9222,6 +9531,8 @@ def create_server(
     capability_vault_secrets: dict[tuple[str, str], str] | None = None,
     capability_revocation_jtis: set[str] | None = None,
     capability_operator_token: str | None = None,
+    max_open_cards_per_agent: int = MAX_OPEN_CARDS_PER_AGENT,
+    max_open_cards_per_phone: int = MAX_OPEN_CARDS_PER_PHONE,
     principal_apps: dict[str, AppContext] | None = None,
     devices_pair_consumer_webhook_tokens: dict[str, str] | None = None,
     devices_pair_consumer_relay_urls: dict[str, str] | None = None,
@@ -9348,11 +9659,16 @@ def create_server(
     registry of `AppContext` entries keyed by principal-id. The
     bootloader injects the matching AppContext into every
     PendingRequest at queue time so the phone can show the app's
-    icon + name + description at the top of the approval card. Look-
-    up order: cap_agent_id (capability_request) -> service-name
-    (other phone-rendered kinds). None / empty disables app-context
-    injection entirely; PendingRequests carry app_context=None and
-    the phone shows an "Unknown app" warning banner.
+    icon + name + description at the top of the approval card. The
+    key is the authenticated agent id, and nothing the request body
+    says. None / empty disables app-context injection entirely;
+    PendingRequests carry app_context=None and the phone shows an
+    "Unknown app" warning banner.
+
+    `max_open_cards_per_agent` and `max_open_cards_per_phone` cap the
+    cards one agent may hold open for one signed subject, and all
+    agents together, on one phone. A request past either is refused
+    429 by name.
     """
     # THE STORE LOCK (hard rule 14.4, amended): a serving process holds an exclusive lock on its file-backend state dir
     # for its lifetime, so the host CLI's owner-reset never edits a registry this process would overwrite from memory.
@@ -9682,6 +9998,13 @@ def create_server(
                 reason="test-convenience seed via create_server",
             ))
     BootloaderHandler.config.capability_operator_token = capability_operator_token
+    for _name, _cap in (("max_open_cards_per_agent", max_open_cards_per_agent),
+                        ("max_open_cards_per_phone", max_open_cards_per_phone)):
+        if isinstance(_cap, bool) or not isinstance(_cap, int) or _cap < 1:
+            server.server_close()   # a refused start leaves no socket and no store lock behind
+            raise BootloaderError(f"{_name} must be a whole number of at least 1; got {_cap!r}")
+        setattr(BootloaderHandler.config, _name, _cap)
+    BootloaderHandler.config.card_raises = CardRaises()
     BootloaderHandler.config.principal_apps = (
         dict(principal_apps) if principal_apps else {}
     )

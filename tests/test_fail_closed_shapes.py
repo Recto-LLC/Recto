@@ -776,6 +776,13 @@ class TestRule15zAGrantRequestRingsOnlyTheBoundPhone:
                 raw = f.read_bytes()
                 assert purpose.encode() not in raw and name.encode() not in raw, f
 
+    def test_half_of_a_surrogate_pair_is_refused(self, uv_ctx) -> None:
+        a, s = _bound(uv_ctx)
+        for words in ({"purpose": "x\ud800y"}, {"agent_name": "x\udfffy"}):
+            status, body = _raise(uv_ctx, s, **words)
+            assert status == 400 and body["error"] == "grant_request_invalid", body
+        assert _uv_cards(uv_ctx, a) == []
+
     def test_one_open_request_per_agent_and_key(self, uv_ctx) -> None:
         _, s = _bound(uv_ctx)
         assert _raise(uv_ctx, s)[0] == 200

@@ -132,8 +132,10 @@ public sealed class MauiTotpService : ITotpService
             // we can't iterate "all keys with our prefix" directly.
             // RemoveAll wipes the entire SecureStorage namespace for this
             // app, which is the right semantic for a Settings "Unpair all"
-            // emergency wipe -- both TOTP secrets AND the pairing record
-            // (also stored in SecureStorage) get cleared in one step.
+            // emergency wipe -- TOTP secrets, the pairing record AND the
+            // recovery phrase (all stored in SecureStorage) get cleared in
+            // one step. UnpairService, the one caller, asks about the
+            // phrase first.
             //
             // DIAG-2026-04-30 (auto-unpair investigation): log every caller.
             // UnpairAllAsync in Settings.razor is the only known caller; if

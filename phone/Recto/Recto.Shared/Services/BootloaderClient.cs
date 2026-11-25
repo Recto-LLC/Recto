@@ -146,12 +146,12 @@ public sealed class BootloaderClient : IBootloaderClient
         try
         {
             var parsed = JsonSerializer.Deserialize<PendingRequestsResponse>(body.Value, _readOptions);
-            if (parsed is null)
+            if (parsed?.Requests is null)
             {
                 return Result.Failure<PendingRequestsResponse>(Error.Failure("Bootloader returned an empty response body."));
             }
             string? raw = null;
-            using (var doc = JsonDocument.Parse(body.Value))
+            using (var doc = JsonDocument.Parse(body.Value, new JsonDocumentOptions { MaxDepth = _readOptions.MaxDepth }))
             {
                 if (doc.RootElement.TryGetProperty("requests", out var reqs))
                 {
@@ -166,7 +166,8 @@ public sealed class BootloaderClient : IBootloaderClient
         }
     }
 
-    private static readonly JsonSerializerOptions _readOptions = new(JsonSerializerDefaults.Web);
+    // Deeper than any queue's encoder writes: how deep one card nests is never why the others cannot be read.
+    private static readonly JsonSerializerOptions _readOptions = new(JsonSerializerDefaults.Web) { MaxDepth = 4096 };
 
     public Task<Result<RespondResponse>> RespondAsync(
         string bootloaderUrl, string requestId, RespondRequest request, CancellationToken ct)

@@ -133,7 +133,7 @@ public class ActorContextTests
         Assert.True(box > 0, "the TRANSPORT box stands");
         Assert.Equal(box, page.IndexOf(unsigned, StringComparison.Ordinal) - "TRANSPORT &mdash; ".Length);
         Assert.Equal(-1, page.IndexOf(unsigned, box + 30, StringComparison.Ordinal));
-        var named = page.IndexOf("Names the agent: @actorVerdict.Name", StringComparison.Ordinal);
+        var named = page.IndexOf("Names the agent: <bdi dir=\"auto\">@actorVerdict.Name</bdi>", StringComparison.Ordinal);
         Assert.True(named > box && named < page.IndexOf("</div>", box, StringComparison.Ordinal),
             "the delivered name is listed inside the TRANSPORT box");
     }

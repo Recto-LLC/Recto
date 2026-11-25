@@ -39,7 +39,7 @@ public static class ActorContextCheck
         if (!string.Equals(actor.ActorId, signedActingAgent, StringComparison.Ordinal))
         {
             return new Verdict(false, null, null,
-                $"The delivering app names actor {actor.ActorId} but the signed subject is {signedActingAgent}; " +
+                $"The delivering app names actor {VisibleText.Of(actor.ActorId)} but the signed subject is {signedActingAgent}; " +
                 "the face and name are withheld — approve only what the signature names.");
         }
         var icon = actor.ActorIconUrl;
@@ -49,6 +49,6 @@ public static class ActorContextCheck
         {
             icon = null;   // a non-http scheme is not an image the card fetches; the monogram stands in
         }
-        return new Verdict(true, actor.ActorName.Trim(), icon, null);
+        return new Verdict(true, VisibleText.Of(actor.ActorName.Trim()), icon, null);
     }
 }

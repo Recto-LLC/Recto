@@ -175,28 +175,6 @@ def verify_jwt(token: str, *, public_key_b64u: str, audience: str) -> SessionCla
     )
 
 
-def _maybe_decoded_payload(payload: bytes) -> bytes | None:
-    """If `payload` is the ASCII bytes of a valid base64url string, return
-    the decoded raw bytes; otherwise None.
-
-    Workaround for the iOS C# phone client bug (2026-05-11): it decodes the
-    server-issued challenge_b64u before signing, while fake_phone.py + the
-    server's canonical convention sign the literal ASCII string. verify_signature
-    tries the canonical payload first, falls back to the decoded form if that
-    fails, so iOS phones pre-fix still pair. Remove this once the phone-side
-    Home.razor:966 + :1971 are fixed to sign Encoding.ASCII.GetBytes(challenge).
-    """
-    try:
-        s = payload.decode("ascii")
-    except UnicodeDecodeError:
-        return None
-    try:
-        padding = "=" * (-len(s) % 4)
-        return base64.urlsafe_b64decode(s + padding)
-    except Exception:
-        return None
-
-
 # --- GATE 2a: the algorithm vocabulary, declared in ONE place ---------------
 # Before 2026-08-17 no such list existed. `algorithm` was whatever string the
 # phone happened to send, passed straight to verification, and THREE separate
@@ -224,7 +202,7 @@ def verify_signature(
     *, payload: bytes, signature_b64u: str, public_key_b64u: str,
     algorithm: str = "ed25519",
 ) -> bool:
-    """Verify a signature over a payload.
+    """Verify a signature over a payload, over exactly the bytes given.
 
     Supports two algorithms (chosen by ``algorithm``):
       - ``ed25519``: Ed25519 over raw 64-byte signature.
@@ -261,37 +239,27 @@ def verify_signature(
     if len(sig) != 64:
         return False
 
-    def _verify(payload_to_try: bytes) -> bool:
-        if algorithm == "ed25519":
-            try:
-                pub_key.verify(sig, payload_to_try)
-                return True
-            except InvalidSignature:
-                return False
-        if algorithm == "ecdsa-p256":
-            # Convert raw r||s to DER for cryptography's verify.
-            r = int.from_bytes(sig[:32], "big")
-            s = int.from_bytes(sig[32:], "big")
-            try:
-                der_sig = encode_dss_signature(r, s)
-                pub_key.verify(der_sig, payload_to_try, ec.ECDSA(hashes.SHA256()))
-                return True
-            except InvalidSignature:
-                return False
-            except Exception:
-                # encode_dss_signature can raise on r/s out of range, etc.
-                # Treat as invalid signature rather than propagate.
-                return False
-        raise BootloaderError(f"unsupported algorithm: {algorithm!r}")
-
-    # Try the canonical payload first (literal ASCII bytes of base64url string).
-    if _verify(payload):
-        return True
-    # Fallback: iOS C# phone bug — it signs the decoded raw bytes.
-    decoded = _maybe_decoded_payload(payload)
-    if decoded is not None and _verify(decoded):
-        return True
-    return False
+    if algorithm == "ed25519":
+        try:
+            pub_key.verify(sig, payload)
+            return True
+        except InvalidSignature:
+            return False
+    if algorithm == "ecdsa-p256":
+        # Convert raw r||s to DER for cryptography's verify.
+        r = int.from_bytes(sig[:32], "big")
+        s = int.from_bytes(sig[32:], "big")
+        try:
+            der_sig = encode_dss_signature(r, s)
+            pub_key.verify(der_sig, payload, ec.ECDSA(hashes.SHA256()))
+            return True
+        except InvalidSignature:
+            return False
+        except Exception:
+            # encode_dss_signature can raise on r/s out of range, etc.
+            # Treat as invalid signature rather than propagate.
+            return False
+    raise BootloaderError(f"unsupported algorithm: {algorithm!r}")
 
 
 def build_session_issuance_payload(

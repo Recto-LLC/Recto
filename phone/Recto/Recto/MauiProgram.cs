@@ -95,6 +95,7 @@ public static class MauiProgram
         // closed ahead of the first destructive call. Every UI surface
         // that destroys the identity key routes through IUnpairService.
         builder.Services.AddSingleton<IGenesisStateService, MauiGenesisStateService>();
+        builder.Services.AddSingleton<IRecoveryPhraseStore>(MauiRecoveryPhraseStore.Instance);
         builder.Services.AddSingleton<IUnpairService, UnpairService>();
         // v1 vault home (banked 2026-05-18): registry of consumer services
         // the phone has been authorized to receive requests from. Derived

@@ -1,0 +1,11 @@
+@using Recto.Shared.Capability
+@* Text a card was sent, as the card shows it: hidden characters written out, in its own direction, its order kept to
+   itself. *@
+<bdi dir="auto">@(Prose ? VisibleText.OfProse(Value) : VisibleText.Of(Value))</bdi>
+
+@code {
+    [Parameter] public string? Value { get; set; }
+
+    /// <summary>Sentences rather than an id, a name or a value.</summary>
+    [Parameter] public bool Prose { get; set; }
+}

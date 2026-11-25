@@ -227,6 +227,29 @@ public class BootloaderClientTests
         Assert.Contains("unknown_endpoint", result.Error.Message);
     }
 
+    // One card of the queue that this app cannot read, however it is malformed, leaves the others readable.
+    [Theory]
+    [InlineData("{\"request_id\":\"bad\",\"kind\":\"capability_request\",\"service\":{\"a\":1},\"secret\":\"k\",\"context\":{}}")]
+    [InlineData("{\"request_id\":\"bad\",\"kind\":\"capability_request\",\"service\":\"s\",\"secret\":\"k\",\"context\":{\"operation_description\":\"x\\ud800y\"}}")]
+    [InlineData("deep")]
+    public async Task GetPending_KeepsTheOthers_WhenOneCardCannotBeRead(string bad)
+    {
+        if (bad == "deep")
+            bad = "{\"request_id\":\"bad\",\"kind\":\"single_sign\",\"service\":" + new string('[', 900) + new string(']', 900) + "}";
+        static string Good(string id) => "{\"request_id\":\"" + id + "\",\"kind\":\"single_sign\",\"service\":\"s\",\"secret\":\"k\","
+            + "\"context\":{\"child_pid\":0,\"child_argv0\":\"x\",\"requested_at_unix\":1,\"operation_description\":\"d\"}}";
+        var list = "[" + Good("one") + "," + bad + "," + Good("two") + "]";
+        var sut = MakeClient(new RecordingHandler(_ => Json(HttpStatusCode.OK, "{\"requests\":" + list + "}")));
+
+        var result = await sut.GetPendingAsync("http://h", "phone-id-1", CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+        Assert.Equal(new[] { "one", "bad", "two" }, System.Linq.Enumerable.Select(result.Value.Requests, r => r.RequestId));
+        Assert.Equal(PendingRequestKind.Unreadable, result.Value.Requests[1].Kind);
+        Assert.Equal(PendingRequestKind.SingleSign, result.Value.Requests[2].Kind);
+        Assert.Equal(list, result.Value.RequestsRawJson);   // what the envelope signs is the text as it came
+    }
+
     // --- helpers ---
 
     private static BootloaderClient MakeClient(RecordingHandler handler)

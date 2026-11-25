@@ -62,6 +62,7 @@ from typing import Any, Iterator
 from recto.bootloader.state import (
     GENESIS_LEGACY_ALGORITHM,
     OWNER_GENESIS_STATES,
+    ActorContext,
     AppContext,
     RegistryLockUnavailable,
     CapabilityResult,
@@ -459,6 +460,9 @@ class PostgresStateStore(StateStoreBase):
         ac = d.get("app_context")
         if isinstance(ac, dict):
             d["app_context"] = AppContext(**ac)
+        actor = d.get("actor_context")
+        if isinstance(actor, dict):
+            d["actor_context"] = ActorContext(**actor)
         return PendingRequest(**d)
 
     def _purge_expired(self, conn: Any, table: str) -> None:
@@ -501,6 +505,19 @@ class PostgresStateStore(StateStoreBase):
                 (phone_id,),
             ).fetchall()
         return [self._pending_from_doc(r[0]) for r in rows]
+
+    def replace_pending(self, req: PendingRequest) -> bool:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                self._q(
+                    "UPDATE {schema}.pending "
+                    "SET doc = %s, expires_at_unix = %s "
+                    "WHERE request_id = %s "
+                    "RETURNING request_id"
+                ),
+                (Jsonb(asdict(req)), req.expires_at_unix, req.request_id),
+            ).fetchone()
+        return row is not None
 
     def take_pending(self, request_id: str) -> PendingRequest | None:
         """Bare pop -- deliberately NO expiry guard, matching the file

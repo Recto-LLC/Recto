@@ -38,7 +38,14 @@ from recto.bootloader.push import (  # noqa: E402
     PushSender,
     PushSendError,
 )
-from recto.bootloader.server import ChallengeStore, create_server, poll_key_delegation_payload  # noqa: E402
+from recto.bootloader.server import (  # noqa: E402
+    POLL_SIG_HEADER,
+    POLL_SIG_PREFIX,
+    POLL_SIG_TS_HEADER,
+    ChallengeStore,
+    create_server,
+    poll_key_delegation_payload,
+)
 from recto.bootloader.state import PhoneRegistration, StateStore  # noqa: E402
 
 
@@ -136,6 +143,40 @@ class TestPushDispatcher:
         # Must not raise -- push is best-effort by design.
         d.notify(_phone(push_token="t", push_platform="apns"), "req-1")
         assert failing.fired.wait(timeout=5.0)
+
+    def test_a_burst_is_one_wake_now_and_one_at_the_intervals_end(self):
+        fcm = RecordingSender("fcm")
+        d = PushDispatcher([fcm], wake_min_interval_seconds=0.4)
+        phone = _phone(push_token="tok", push_platform="fcm")
+        for n in range(20):
+            d.notify(phone, f"req-{n}")
+        assert fcm.fired.wait(timeout=5.0)
+        time.sleep(0.15)
+        assert fcm.sends == [("tok", "req-0")]
+        time.sleep(0.6)
+        # The burst's last card is not left waiting on a poll.
+        assert fcm.sends == [("tok", "req-0"), ("tok", "req-19")]
+        time.sleep(0.5)
+        d.notify(phone, "req-later")
+        time.sleep(0.15)
+        assert fcm.sends[-1] == ("tok", "req-later")
+
+    def test_the_interval_is_each_phones_own(self):
+        fcm = RecordingSender("fcm")
+        d = PushDispatcher([fcm], wake_min_interval_seconds=30)
+        d.notify(_phone(push_token="a", push_platform="fcm", public_key_b64u="AAAA"), "req-a")
+        d.notify(_phone(push_token="b", push_platform="fcm", public_key_b64u="BBBB"), "req-b")
+        time.sleep(0.3)
+        assert sorted(fcm.sends) == [("a", "req-a"), ("b", "req-b")]
+
+    def test_an_owed_wake_goes_to_the_newest_token(self):
+        fcm = RecordingSender("fcm")
+        d = PushDispatcher([fcm], wake_min_interval_seconds=0.3)
+        d.notify(_phone(push_token="old", push_platform="fcm"), "req-1")
+        d.notify(_phone(push_token="old", push_platform="fcm"), "req-2")
+        d.notify(_phone(push_token="new", push_platform="fcm"), "req-3")
+        time.sleep(0.7)
+        assert fcm.sends == [("old", "req-1"), ("new", "req-3")]
 
     def test_platforms_property(self):
         d = PushDispatcher([RecordingSender("fcm"), RecordingSender("apns")])
@@ -374,7 +415,8 @@ def _register_phone_http(ctx, *, push_token=None, push_platform=None):
     # Canonical convention: sign the literal ASCII bytes of the
     # base64url challenge string.
     signature = key.sign(challenge.encode("ascii"))
-    poll_pub_raw = Ed25519PrivateKey.generate().public_key().public_bytes(
+    ctx["poll_key"] = Ed25519PrivateKey.generate()
+    poll_pub_raw = ctx["poll_key"].public_key().public_bytes(
         serialization.Encoding.Raw, serialization.PublicFormat.Raw
     )
 
@@ -438,10 +480,14 @@ class TestPushTokenUpdateEndpoint:
             push_server, push_token="old-tok", push_platform="fcm"
         )
         phone_id = reg["phone_id"]
+        ts = int(time.time())
+        signed = push_server["poll_key"].sign(
+            f"{POLL_SIG_PREFIX}|{phone_id}|{ts}|/v0.4/manage/push_token".encode("ascii"))
         status, body = _http_post_json(
             f"{push_server['base_url']}/v0.4/manage/push_token",
             {"phone_id": phone_id, "push_token": "new-tok",
              "push_platform": "fcm"},
+            headers={POLL_SIG_HEADER: _b64u(signed), POLL_SIG_TS_HEADER: str(ts)},
         )
         assert status == 200
         assert body == {"updated": True, "phone_id": phone_id}

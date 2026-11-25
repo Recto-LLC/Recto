@@ -10,7 +10,8 @@ never wrong about a real one.
 So the assertions here are about the JOINT behaviour of writer and reader:
 
     * a chain the writer produced REPLAYS (the positive control);
-    * a majority is genuinely required -- one short is refused;
+    * the passphrase and a device are genuinely required -- one short is refused;
+    * a set that holds no passphrase takes one change: the add that seats it;
     * a byte changed on disk afterwards makes the set UNREADABLE, not absent;
     * the writer cannot extend a chain that is already broken;
     * an unparseable file is never mistaken for "no chain yet".
@@ -33,7 +34,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 import recto.cli as cli
-from recto.bootloader.genesis_chain import ChainError, required_signatures
+from recto.bootloader.genesis_chain import ChainError
 from recto.bootloader.state import StateStore
 
 
@@ -77,30 +78,47 @@ def _challenge(stdout: str) -> bytes:
     raise AssertionError(f"no challenge found in:\n{stdout}")
 
 
+def _add(run, kind, pub, *signers):
+    """Add one member through the two-step command, signed by `signers`."""
+    rc, out, err = run(kind=kind, pubkey=pub.hex(), show_challenge=True)
+    if rc != 0:
+        return rc, out, err
+    c = _challenge(out)
+    return run(kind=kind, pubkey=pub.hex(), signature=[_b64u(s.sign(c)) for s in signers])
+
+
+def _roster(run):
+    """The real shape of a vault: the passphrase, then a recovery phone, then a primary phone. Returns
+    {kind: (key, pub)}."""
+    keys = {k: _keypair() for k in ("passphrase", "recovery-phone", "primary-phone")}
+    rc, _, err = run(kind="passphrase", pubkey=keys["passphrase"][1].hex(), genesis=True)
+    assert rc == 0, err
+    rc, _, err = _add(run, "recovery-phone", keys["recovery-phone"][1], keys["passphrase"][0])
+    assert rc == 0, err
+    rc, _, err = _add(run, "primary-phone", keys["primary-phone"][1], keys["passphrase"][0], keys["recovery-phone"][0])
+    assert rc == 0, err
+    return keys
+
+
 # ---------------------------------------------------------------------------
 # THE POSITIVE CONTROL
 # ---------------------------------------------------------------------------
 
 def test_genesis_then_add_then_read_back(vault):
     run, state = vault
-    alpha, alpha_pub = _keypair()
-    _, beta_pub = _keypair()
+    phrase, phrase_pub = _keypair()
+    _, phone_pub = _keypair()
 
-    rc, _, err = run(kind="alpha", pubkey=alpha_pub.hex(), genesis=True)
+    rc, _, err = run(kind="passphrase", pubkey=phrase_pub.hex(), genesis=True)
     assert rc == 0, err
-    assert sorted(state.list_genesis_members_full()) == ["alpha"]
+    assert sorted(state.list_genesis_members_full()) == ["passphrase"]
 
-    rc, out, err = run(kind="beta", pubkey=beta_pub.hex(), show_challenge=True)
-    assert rc == 0, err
-    rc, _, err = run(
-        kind="beta", pubkey=beta_pub.hex(),
-        signature=[_b64u(alpha.sign(_challenge(out)))],
-    )
+    rc, _, err = _add(run, "recovery-phone", phone_pub, phrase)
     assert rc == 0, err
 
     members = state.list_genesis_members_full()
-    assert sorted(members) == ["alpha", "beta"]
-    assert members["beta"].pubkey == beta_pub
+    assert sorted(members) == ["passphrase", "recovery-phone"]
+    assert members["recovery-phone"].pubkey == phone_pub
     assert state.list_unreadable_genesis_members() == {}
 
 
@@ -120,101 +138,150 @@ def test_the_written_chain_is_what_the_reader_replays(vault):
 
 
 # ---------------------------------------------------------------------------
-# THE THRESHOLD IS REAL
+# THE THRESHOLD IS REAL (hard rule 14.7)
 # ---------------------------------------------------------------------------
 
 def test_one_signature_short_is_refused(vault):
-    """A set of two requires two. This is the assertion that makes the
+    """Once a device is sealed a change needs the passphrase AND a device. This is the assertion that makes the
     threshold a rule rather than a comment."""
     run, state = vault
-    alpha, alpha_pub = _keypair()
-    beta, beta_pub = _keypair()
-    _, gamma_pub = _keypair()
+    phrase, phrase_pub = _keypair()
+    phone, phone_pub = _keypair()
+    _, other_pub = _keypair()
+    run(kind="passphrase", pubkey=phrase_pub.hex(), genesis=True)
+    _add(run, "recovery-phone", phone_pub, phrase)
 
-    run(kind="alpha", pubkey=alpha_pub.hex(), genesis=True)
-    _, out, _ = run(kind="beta", pubkey=beta_pub.hex(), show_challenge=True)
-    run(kind="beta", pubkey=beta_pub.hex(),
-        signature=[_b64u(alpha.sign(_challenge(out)))])
-    assert required_signatures(2) == 2
+    for short in ([phrase], [phone]):
+        rc, _, err = _add(run, "primary-phone", other_pub, *short)
+        assert rc != 0
+        assert "hard rule 14.7" in err
+        assert sorted(state.list_genesis_members_full()) == ["passphrase", "recovery-phone"], \
+            "a refused entry must not have been written"
 
-    _, out, _ = run(kind="gamma", pubkey=gamma_pub.hex(), show_challenge=True)
-    challenge = _challenge(out)
-
-    rc, _, err = run(kind="gamma", pubkey=gamma_pub.hex(),
-                     signature=[_b64u(alpha.sign(challenge))])
-    assert rc != 0
-    assert "requires 2" in err
-    assert sorted(state.list_genesis_members_full()) == ["alpha", "beta"], \
-        "a refused entry must not have been written"
-
-    rc, _, err = run(
-        kind="gamma", pubkey=gamma_pub.hex(),
-        signature=[_b64u(alpha.sign(challenge)), _b64u(beta.sign(challenge))],
-    )
+    rc, _, err = _add(run, "primary-phone", other_pub, phrase, phone)
     assert rc == 0, err
-    assert sorted(state.list_genesis_members_full()) == ["alpha", "beta", "gamma"]
+    assert sorted(state.list_genesis_members_full()) == ["passphrase", "primary-phone", "recovery-phone"]
 
 
-def test_one_member_cannot_sign_twice_to_fake_a_majority(vault):
+def test_one_member_cannot_sign_twice_for_two(vault):
     """Members satisfied, never signatures accepted."""
-    run, state = vault
-    alpha, alpha_pub = _keypair()
-    beta, beta_pub = _keypair()
-    _, gamma_pub = _keypair()
+    run, _ = vault
+    phrase, phrase_pub = _keypair()
+    _, phone_pub = _keypair()
+    _, other_pub = _keypair()
+    run(kind="passphrase", pubkey=phrase_pub.hex(), genesis=True)
+    _add(run, "recovery-phone", phone_pub, phrase)
 
-    run(kind="alpha", pubkey=alpha_pub.hex(), genesis=True)
-    _, out, _ = run(kind="beta", pubkey=beta_pub.hex(), show_challenge=True)
-    run(kind="beta", pubkey=beta_pub.hex(),
-        signature=[_b64u(alpha.sign(_challenge(out)))])
-
-    _, out, _ = run(kind="gamma", pubkey=gamma_pub.hex(), show_challenge=True)
-    challenge = _challenge(out)
-    sig = _b64u(alpha.sign(challenge))
-
-    rc, _, err = run(kind="gamma", pubkey=gamma_pub.hex(), signature=[sig, sig])
+    rc, _, err = _add(run, "primary-phone", other_pub, phrase, phrase)
     assert rc != 0
-    assert "requires 2" in err
+    assert "no device signature" in err
 
 
-def test_removal_needs_a_majority_and_the_last_member_cannot_go(vault):
-    """The reason the threshold is majority and not unanimity: a lost member
-    must be removable by the members that remain."""
+def test_a_lost_device_is_removed_by_the_passphrase_and_the_other(vault):
+    """The reason it is the passphrase and ONE device: a lost phone must be removable by what remains."""
     run, state = vault
-    alpha, alpha_pub = _keypair()
-    beta, beta_pub = _keypair()
-    gamma, gamma_pub = _keypair()
+    keys = _roster(run)
 
-    run(kind="alpha", pubkey=alpha_pub.hex(), genesis=True)
-    _, out, _ = run(kind="beta", pubkey=beta_pub.hex(), show_challenge=True)
-    run(kind="beta", pubkey=beta_pub.hex(),
-        signature=[_b64u(alpha.sign(_challenge(out)))])
-    _, out, _ = run(kind="gamma", pubkey=gamma_pub.hex(), show_challenge=True)
+    _, out, _ = run(kind="recovery-phone", remove=True, show_challenge=True)
     c = _challenge(out)
-    run(kind="gamma", pubkey=gamma_pub.hex(),
-        signature=[_b64u(alpha.sign(c)), _b64u(beta.sign(c))])
-
-    # Two of three drop the third -- exactly the lost-phone story.
-    _, out, _ = run(kind="beta", remove=True, show_challenge=True)
-    c = _challenge(out)
-    rc, _, err = run(kind="beta", remove=True,
-                     signature=[_b64u(alpha.sign(c)), _b64u(gamma.sign(c))])
+    rc, _, err = run(kind="recovery-phone", remove=True,
+                     signature=[_b64u(keys["passphrase"][0].sign(c)), _b64u(keys["primary-phone"][0].sign(c))])
     assert rc == 0, err
-    assert sorted(state.list_genesis_members_full()) == ["alpha", "gamma"]
+    assert sorted(state.list_genesis_members_full()) == ["passphrase", "primary-phone"]
 
-    # ...and the set can never be emptied.
-    _, out, _ = run(kind="gamma", remove=True, show_challenge=True)
+    # ...and the last device is never removed here (the owner reset's job).
+    _, out, _ = run(kind="primary-phone", remove=True, show_challenge=True)
     c = _challenge(out)
-    run(kind="gamma", remove=True,
-        signature=[_b64u(alpha.sign(c)), _b64u(gamma.sign(c))])
-    rc, _, err = run(kind="alpha", remove=True, show_challenge=True)
+    rc, _, err = run(kind="primary-phone", remove=True,
+                     signature=[_b64u(keys["passphrase"][0].sign(c)), _b64u(keys["primary-phone"][0].sign(c))])
+    assert rc != 0
+    assert "last device" in err
+
+
+def test_the_last_member_cannot_go(vault):
+    run, _ = vault
+    _, pub = _keypair()
+    run(kind="passphrase", pubkey=pub.hex(), genesis=True)
+    rc, _, err = run(kind="passphrase", remove=True, show_challenge=True)
     assert rc != 0
     assert "last member" in err
+
+
+# ---------------------------------------------------------------------------
+# A SET WITH NO PASSPHRASE TAKES ONE CHANGE: THE ADD THAT SEATS IT
+# ---------------------------------------------------------------------------
+
+def test_a_device_alone_never_changes_the_roster(vault):
+    run, state = vault
+    phone, phone_pub = _keypair()
+    _, other_pub = _keypair()
+    run(kind="recovery-phone", pubkey=phone_pub.hex(), genesis=True)
+
+    rc, _, err = run(kind="primary-phone", pubkey=other_pub.hex(), show_challenge=True)
+    assert rc != 0
+    assert "holds no passphrase" in err
+    assert sorted(state.list_genesis_members_full()) == ["recovery-phone"]
+
+
+def test_the_store_refuses_it_too(vault, tmp_path):
+    """The command's refusal is manners; the store is the guard."""
+    from recto.bootloader.genesis_chain import build_entry, entry_hash, entries_from_records, signing_bytes
+
+    run, state = vault
+    phone, phone_pub = _keypair()
+    _, other_pub = _keypair()
+    run(kind="recovery-phone", pubkey=phone_pub.hex(), genesis=True)
+    tip = entry_hash(entries_from_records(state.read_genesis_chain())[-1])
+    msg = signing_bytes(seq=1, op="add", kind="primary-phone", pubkey=other_pub, algorithm="ed25519", prev=tip)
+    entry = build_entry(seq=1, op="add", kind="primary-phone", pubkey=other_pub, algorithm="ed25519", prev=tip,
+                        signatures=[phone.sign(msg)])
+    before = (tmp_path / "genesis_members.json").read_bytes()
+    with pytest.raises(ChainError, match="holds no passphrase"):
+        state.append_genesis_chain_entry(entry.as_record())
+    assert (tmp_path / "genesis_members.json").read_bytes() == before
+
+
+def test_the_passphrase_is_seated_by_the_set_as_it_stands(vault):
+    run, state = vault
+    phone, phone_pub = _keypair()
+    _, phrase_pub = _keypair()
+    run(kind="recovery-phone", pubkey=phone_pub.hex(), genesis=True)
+
+    stranger, _ = _keypair()
+    rc, _, err = _add(run, "passphrase", phrase_pub, stranger)
+    assert rc != 0
+    rc, _, err = _add(run, "passphrase", phrase_pub, phone)
+    assert rc == 0, err
+    assert sorted(state.list_genesis_members_full()) == ["passphrase", "recovery-phone"]
+
+
+def test_a_chain_written_before_the_rule_still_reads(vault, tmp_path):
+    """An older chain with no passphrase replays exactly as it did: it is read, and only a NEW entry is refused."""
+    from recto.bootloader.genesis_chain import build_entry, entry_hash, entries_from_records, signing_bytes
+
+    run, state = vault
+    phone, phone_pub = _keypair()
+    _, other_pub = _keypair()
+    run(kind="recovery-phone", pubkey=phone_pub.hex(), genesis=True)
+    tip = entry_hash(entries_from_records(state.read_genesis_chain())[-1])
+    msg = signing_bytes(seq=1, op="add", kind="primary-phone", pubkey=other_pub, algorithm="ed25519", prev=tip)
+    entry = build_entry(seq=1, op="add", kind="primary-phone", pubkey=other_pub, algorithm="ed25519", prev=tip,
+                        signatures=[phone.sign(msg)])
+    path = tmp_path / "genesis_members.json"
+    body = json.loads(path.read_text(encoding="utf-8"))
+    body["chain"].append(entry.as_record())   # as a writer before the rule left it
+    path.write_text(json.dumps(body), encoding="utf-8")
+
+    older = StateStore(state_dir=tmp_path)
+    assert sorted(older.list_genesis_members_full()) == ["primary-phone", "recovery-phone"]
+    assert older.list_unreadable_genesis_members() == {}
+    assert older.genesis_chain_state().length == 2
 
 
 def test_removing_a_non_member_is_refused(vault):
     run, _ = vault
     _, pub = _keypair()
-    run(kind="alpha", pubkey=pub.hex(), genesis=True)
+    run(kind="passphrase", pubkey=pub.hex(), genesis=True)
     rc, _, err = run(kind="nobody", remove=True, show_challenge=True)
     assert rc != 0
     assert "not a current member" in err
@@ -225,17 +292,10 @@ def test_removal_refuses_a_pubkey_that_disagrees_with_the_chain(vault):
     the operator supplies one and it disagrees, they are not looking at the
     vault they think they are -- silently using the chain's value hides that."""
     run, _ = vault
-    alpha, alpha_pub = _keypair()
-    _, beta_pub = _keypair()
+    _roster(run)
     _, other_pub = _keypair()
-    run(kind="alpha", pubkey=alpha_pub.hex(), genesis=True)
-    # Two members, so the last-member guard (which is checked first, and
-    # rightly) does not answer for this one.
-    _, out, _ = run(kind="beta", pubkey=beta_pub.hex(), show_challenge=True)
-    run(kind="beta", pubkey=beta_pub.hex(),
-        signature=[_b64u(alpha.sign(_challenge(out)))])
 
-    rc, _, err = run(kind="beta", remove=True, pubkey=other_pub.hex(),
+    rc, _, err = run(kind="recovery-phone", remove=True, pubkey=other_pub.hex(),
                      show_challenge=True)
     assert rc != 0
     assert "does not match" in err
@@ -254,12 +314,7 @@ def test_editing_the_file_makes_the_set_unreadable_not_empty(vault, tmp_path):
     that destroys what was still there.
     """
     run, state = vault
-    alpha, alpha_pub = _keypair()
-    _, beta_pub = _keypair()
-    run(kind="alpha", pubkey=alpha_pub.hex(), genesis=True)
-    _, out, _ = run(kind="beta", pubkey=beta_pub.hex(), show_challenge=True)
-    run(kind="beta", pubkey=beta_pub.hex(),
-        signature=[_b64u(alpha.sign(_challenge(out)))])
+    _roster(run)
 
     path = tmp_path / "genesis_members.json"
     body = json.loads(path.read_text(encoding="utf-8"))
@@ -406,20 +461,20 @@ def test_no_signatures_prints_the_challenge_but_exits_nonzero(vault):
     run, state = vault
     alpha, alpha_pub = _keypair()
     _, beta_pub = _keypair()
-    run(kind="alpha", pubkey=alpha_pub.hex(), genesis=True)
+    run(kind="passphrase", pubkey=alpha_pub.hex(), genesis=True)
 
     rc, out, err = run(kind="beta", pubkey=beta_pub.hex())
     assert rc != 0
     assert "Bytes to sign" in out, "the operator still needs the challenge"
     assert "nothing was written" in err
-    assert sorted(state.list_genesis_members_full()) == ["alpha"]
+    assert sorted(state.list_genesis_members_full()) == ["passphrase"]
 
 
 def test_show_challenge_writes_nothing(vault):
     run, state = vault
     alpha, alpha_pub = _keypair()
     _, beta_pub = _keypair()
-    run(kind="alpha", pubkey=alpha_pub.hex(), genesis=True)
+    run(kind="passphrase", pubkey=alpha_pub.hex(), genesis=True)
     before = state.read_genesis_chain()
     rc, out, _ = run(kind="beta", pubkey=beta_pub.hex(), show_challenge=True)
     assert rc == 0
@@ -429,10 +484,10 @@ def test_show_challenge_writes_nothing(vault):
 def test_adding_without_a_pubkey_is_refused(vault):
     run, _ = vault
     _, pub = _keypair()
-    run(kind="alpha", pubkey=pub.hex(), genesis=True)
+    run(kind="passphrase", pubkey=pub.hex(), genesis=True)
     rc, _, err = run(kind="beta")
     assert rc != 0
-    assert "--pubkey" in err
+    assert "adding a member needs --pubkey" in err
 
 
 def test_a_bad_kind_is_refused(vault):
@@ -454,10 +509,10 @@ def test_a_non_base64_signature_is_refused(vault):
     run, state = vault
     _, alpha_pub = _keypair()
     _, beta_pub = _keypair()
-    run(kind="alpha", pubkey=alpha_pub.hex(), genesis=True)
+    run(kind="passphrase", pubkey=alpha_pub.hex(), genesis=True)
     rc, _, err = run(kind="beta", pubkey=beta_pub.hex(), signature=["!!!!not b64!!!!"])
     assert rc != 0
-    assert sorted(state.list_genesis_members_full()) == ["alpha"]
+    assert sorted(state.list_genesis_members_full()) == ["passphrase"]
 
 
 # ---------------------------------------------------------------------------
