@@ -649,8 +649,9 @@
                 {
                     <div class="alert alert-danger small text-start mb-3 d-flex align-items-start gap-2" role="alert">
                         <div class="flex-grow-1">
-                            <strong>@(_identityErrorTitle ?? "Server identity changed.")</strong>
+                            <strong>@(_identityErrorTitle ?? ResumePolicy.IdentityChangedTitle)</strong>
                             <div class="text-muted">@_identityError</div>
+                            <div class="text-muted">Last heard from the bootloader: @LastHeard.Describe(_lastHeardAt, DateTimeOffset.UtcNow)</div>
                         </div>
                         <button type="button" class="btn btn-lg btn-outline-secondary"
                                 @onclick="HandleReverifyClickAsync"
@@ -666,6 +667,7 @@
                         <div class="flex-grow-1">
                             <strong>Couldn't reach the bootloader.</strong>
                             <div class="text-muted">@_pollingError</div>
+                            <div class="text-muted">Last heard from the bootloader: @LastHeard.Describe(_lastHeardAt, DateTimeOffset.UtcNow)</div>
                         </div>
                         <button type="button" class="btn btn-lg btn-outline-secondary"
                                 @onclick="HandleRetryPollAsync"
@@ -1997,6 +1999,33 @@
                            @bind:event="oninput" />
                 </details>
 
+                <details class="text-start mb-3" open="@_resetCodeOpen">
+                    <summary class="small text-muted">Owner reset</summary>
+                    <label for="owner-reset-code" class="form-label small mt-2">
+                        Reset code, from the bootloader's own host. Leave it empty for an ordinary pairing.
+                    </label>
+                    <input id="owner-reset-code"
+                           type="text"
+                           maxlength="@PairingCodeShape.ResetCodeTypedMaxLength"
+                           autocomplete="off"
+                           autocapitalize="characters"
+                           autocorrect="off"
+                           spellcheck="false"
+                           placeholder="XXXX-XXXX-XXXX-XXXX"
+                           class="form-control text-center"
+                           disabled="@_busy"
+                           @bind="_resetCode"
+                           @bind:event="oninput" />
+                    @if (!string.IsNullOrWhiteSpace(_resetCode))
+                    {
+                        <div class="small text-muted mt-1">
+                            @(PairingCodeShape.IsResetCode(_resetCode)
+                                ? "The reset code is used; the pairing code above is not sent."
+                                : "A reset code is 16 letters and digits. Clear this field for an ordinary pairing.")
+                        </div>
+                    }
+                </details>
+
                 <div class="form-check text-start mb-3">
                     <input id="pair-as-recovery" class="form-check-input" type="checkbox"
                            disabled="@_busy" @bind="_pairAsRecovery" />
@@ -2239,6 +2268,10 @@
     private string _bootloaderUrl = DemoBootloaderUrl;
     private string _pairingCode = string.Empty;
     private string _testDeviceCode = string.Empty;
+    // The owner reset's code, as typed. In memory for the pairing form only: never stored, logged or put in an
+    // error; cleared when the pairing completes and whenever the pairing code is.
+    private string _resetCode = string.Empty;
+    private bool _resetCodeOpen;
     private bool _offerNewIdentityKey;
     private bool _confirmNewIdentityKey;
 
@@ -2679,7 +2712,7 @@
     // "Pair" without typing a real URL -- the demo flow bypasses HTTP
     // entirely.
     private bool IsDemoPairAttempt =>
-        _pairingCode == DemoPairingCode;
+        _pairingCode == DemoPairingCode && string.IsNullOrWhiteSpace(_resetCode);
 
     // True when the current pairing is a demo-mode pairing (used by the
     // polling loop + approve handlers to short-circuit HTTP calls).
@@ -2689,8 +2722,8 @@
 
     private bool CanPair =>
         !_busy
-        && _pairingCode.Length == 6
-        && _pairingCode.All(char.IsDigit)
+        // Six digits, or an owner reset's sixteen characters in its own field (PairingCodeShape).
+        && PairingCodeShape.CodeToSend(_pairingCode, _resetCode) is not null
         // Real-pair path requires a bootloader URL; demo-pair path doesn't.
         && (IsDemoPairAttempt || !string.IsNullOrWhiteSpace(_bootloaderUrl));
 
@@ -2851,7 +2884,9 @@
     /// while polling runs, fetch pending now: the poll loop may be holding a
     /// reply from before the OS stopped the app, and a fresh one decides
     /// (StaleEnvelopeRetry). Polling stopped on a refusal stays stopped until
-    /// the user re-verifies.
+    /// the user re-verifies - but for one stop: a reply the pinned key signed
+    /// that was only out of date. That one runs the full identity check once
+    /// per resume (ResumePolicy); a changed or unverifiable key never does.
     /// </summary>
     private void OnAppResumed()
     {
@@ -2861,7 +2896,22 @@
             if (_disposed || _paired is null || IsDemoMode) return;
             PushTokenRefresh.TryConsumeDue();
             KickPushTokenSync();
-            if (_pollCts is null) return;
+            if (_pollCts is null)
+            {
+                if (ResumePolicy.ShouldReverifyOnResume(
+                        pollingStopped: true, stoppedOnStaleOnly: _stoppedOnStaleOnly, reverifying: _reverifying))
+                {
+                    try
+                    {
+                        await HandleReverifyClickAsync();
+                    }
+                    catch
+                    {
+                        // The banner stays; the person can still tap.
+                    }
+                }
+                return;
+            }
             try
             {
                 await RefreshPendingAsync(_pollCts?.Token ?? CancellationToken.None);
@@ -3034,7 +3084,18 @@
             // the operator can unpair via Settings and re-scan.
             if (_paired is null)
             {
-                _pairingCode = deepLink.Code;
+                // An owner reset's code goes to its own field, shown grouped; six digits go where they always did.
+                if (PairingCodeShape.IsResetCode(deepLink.Code))
+                {
+                    _resetCode = PairingCodeShape.Display(deepLink.Code);
+                    _resetCodeOpen = true;
+                    _pairingCode = string.Empty;
+                }
+                else
+                {
+                    _pairingCode = deepLink.Code;
+                    _resetCode = string.Empty;
+                }
                 // Bootloader URL is required for bootloader-kind URLs
                 // (PairDeepLinkParser enforces; the null-check is
                 // defense-in-depth).
@@ -3127,6 +3188,7 @@
             _pairServiceHighlightedAppId = null;
             _bootloaderUrl = DemoBootloaderUrl;
             _pairingCode = string.Empty;
+            _resetCode = string.Empty;
             _errorMessage = null;
             await RefreshBiometricsStatusAsync(CancellationToken.None);
 
@@ -3239,9 +3301,17 @@
             }
             var phoneId = phoneIdResult.Value;
 
+            // Six digits as typed, or the reset code in its canonical form: upper case, no separators.
+            var codeToSend = PairingCodeShape.CodeToSend(_pairingCode, _resetCode);
+            if (codeToSend is null)
+            {
+                _errorMessage = "Enter the six-digit pairing code, or the reset code from the bootloader's own host.";
+                return;
+            }
+
             await SetBusyTextAsync("Contacting bootloader...");
             var challengeResult = await BootloaderClient.GetRegistrationChallengeAsync(
-                _bootloaderUrl, _pairingCode, CancellationToken.None);
+                _bootloaderUrl, codeToSend, CancellationToken.None);
             if (challengeResult.IsFailure)
             {
                 _errorMessage = challengeResult.Error.Message;
@@ -3501,6 +3571,8 @@
             RestorePin(pairedState);
 
             _testDeviceCode = string.Empty;
+            _resetCode = string.Empty;
+            _resetCodeOpen = false;
             _paired = pairedState;
             RebuildFailoverCandidates();
             StartPolling();
@@ -4134,6 +4206,7 @@
             _registeredPhones.Clear();
             _bootloaderUrl = DemoBootloaderUrl;
             _pairingCode = string.Empty;
+            _resetCode = string.Empty;
             _errorMessage = null;
             _pollingError = null;
             _lastTotpCode = null;
@@ -5868,7 +5941,8 @@
                         _identityError = "The bootloader's signed reply was out of date twice in a row "
                             + $"({judged.Verdict.Error}). Nothing is shown and nothing will be signed. "
                             + "Check that this phone's date and time are set automatically, then re-verify.";
-                        _identityErrorTitle = "Out-of-date reply from the bootloader.";
+                        _identityErrorTitle = ResumePolicy.OutOfDateTitle;
+                        _stoppedOnStaleOnly = true;
                     }
                     else
                     {
@@ -6225,13 +6299,16 @@
 
     // Every new message resets the banner's title to "Server identity changed.";
     // a path whose cause is not an identity change sets _identityErrorTitle after it.
+    // It also forgets that the last stop was for an out-of-date reply alone: only the
+    // two out-of-date paths set _stoppedOnStaleOnly, after their message.
     private string? _identityErrorValue;
     private string? _identityError
     {
         get => _identityErrorValue;
-        set { _identityErrorValue = value; _identityErrorTitle = null; }
+        set { _identityErrorValue = value; _identityErrorTitle = null; _stoppedOnStaleOnly = false; }
     }
     private string? _identityErrorTitle;
+    private bool _stoppedOnStaleOnly;
     private bool _reverifying;
 
     private bool HasPinDrifted()
@@ -6273,7 +6350,9 @@
             var attest = await BootloaderClient.AttestAsync(ActiveBootloaderUrl, nonce, ct);
             if (attest.IsFailure)
             {
+                // No answer is not a changed server: the title says what happened. Polling still stops.
                 _identityError = $"The bootloader did not answer the identity check: {attest.Error.Message}";
+                _identityErrorTitle = ResumePolicy.NoAnswerTitle;
                 StopPolling();
                 return false;
             }
@@ -6298,6 +6377,7 @@
             if (judged.RefetchError is not null)
             {
                 _identityError = $"The bootloader did not answer the identity check: {judged.RefetchError.Message}";
+                _identityErrorTitle = ResumePolicy.NoAnswerTitle;
                 StopPolling();
                 return false;
             }
@@ -6309,7 +6389,8 @@
                     _identityError = "The bootloader's signed answer was out of date twice in a row "
                         + $"({verdict.Error}). Nothing was signed. Check that this phone's date and "
                         + "time are set automatically, then re-verify.";
-                    _identityErrorTitle = "Out-of-date reply from the bootloader.";
+                    _identityErrorTitle = ResumePolicy.OutOfDateTitle;
+                    _stoppedOnStaleOnly = true;
                 }
                 else
                 {
@@ -6335,6 +6416,8 @@
                 }
             }
             _identityError = null;
+            // The pinned key just signed a fresh answer: that is hearing from the bootloader.
+            _lastHeardAt = DateTimeOffset.UtcNow;
             return true;
         }
         finally

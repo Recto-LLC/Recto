@@ -6,11 +6,16 @@ using Recto.Shared.Services;
 namespace Recto.Platforms.AndroidImpl;
 
 /// <summary>
-/// Build 12 (2026-07-11, wave-C consumer) — receives silent-push wakes from
-/// the bootloader on Android via FCM. The bootloader sends a DATA-only
-/// message (no <c>notification</c> block) when a pending request lands;
-/// <see cref="OnMessageReceived"/> fires for data messages even when the app
-/// is backgrounded, and we raise the process-wide wake signal so Home.razor
+/// Build 12 (2026-07-11, wave-C consumer) — receives push wakes from
+/// the bootloader on Android via FCM. Since 1.2.5 the wake carries a
+/// <c>notification</c> block with one fixed sentence
+/// (<see cref="PushWakeNotice"/>) beside its data marker: with the app in
+/// front <see cref="OnMessageReceived"/> fires and nothing is drawn; with
+/// the app behind or closed the system draws the notification on the
+/// channel <see cref="AndroidPushWakeNotice"/> makes, and a tap opens the
+/// app (MainActivity). A bootloader set to send the silent wake sends the
+/// data marker alone, and <see cref="OnMessageReceived"/> fires as before.
+/// Either way we raise the process-wide wake signal so Home.razor
 /// fetches pending immediately instead of waiting out the poll interval.
 ///
 /// <para>Registered via the <c>[Service]</c> + <c>[IntentFilter]</c>

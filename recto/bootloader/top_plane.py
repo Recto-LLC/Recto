@@ -41,6 +41,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from recto.bootloader import device_codes
 from recto.bootloader.genesis_chain import (
     DEVICE_KINDS, PASSPHRASE_KIND, ChainError, ChainState, act_message, canonical_meta,
 )
@@ -279,8 +280,55 @@ RESET_ARM_DOMAIN = b"recto-owner-reset-arm-v1|"
 
 def reset_arm_digest(arm: dict[str, Any]) -> bytes:
     """The 32 bytes the passphrase signs to ARM a reset after its window: the intent, the slot, a fresh nonce and a
-    not_after (an arm is usable for minutes, once)."""
+    not_after (an arm is usable for minutes, once), and the code's form when the arm names one."""
     return hashlib.sha256(RESET_ARM_DOMAIN + canonical_meta(arm).encode("utf-8")).digest()
+
+
+# THE RESET CODE'S FORM. `long`: sixteen Crockford base32 characters (80 bits) - too many to guess inside the code's
+# window, so no count of wrong codes is kept against it and nobody can burn it. `digits`: six decimal digits, kept for
+# one release for a phone app that cannot type the long form; it burns after a few public wrong codes. The form is
+# inside the arm the passphrase signs, never the redeemer's choice. An arm that names none is `digits` (an older host).
+RESET_CODE_FORM_LONG = "long"
+RESET_CODE_FORM_DIGITS = "digits"
+RESET_CODE_FORMS = (RESET_CODE_FORM_LONG, RESET_CODE_FORM_DIGITS)
+RESET_CODE_LONG_LENGTH = 16
+RESET_CODE_DIGITS_LENGTH = 6
+
+
+def reset_code_form(arm: dict[str, Any]) -> str:
+    """The form the signed arm names. Raises ValueError for a form this bootloader does not mint."""
+    form = arm.get("code_form", RESET_CODE_FORM_DIGITS)
+    if not isinstance(form, str) or form not in RESET_CODE_FORMS:
+        raise ValueError("the arm's code_form is `long` or `digits`")
+    return form
+
+
+def mint_reset_code(form: str) -> str:
+    """A fresh code in its canonical form (what the MAC is over): upper case, no separators."""
+    if form == RESET_CODE_FORM_LONG:
+        return "".join(secrets.choice(device_codes.ALPHABET) for _ in range(RESET_CODE_LONG_LENGTH))
+    if form == RESET_CODE_FORM_DIGITS:
+        return "".join(secrets.choice("0123456789") for _ in range(RESET_CODE_DIGITS_LENGTH))
+    raise ValueError("the arm's code_form is `long` or `digits`")
+
+
+def normalize_reset_code(code: object) -> tuple[str, str] | None:
+    """(form, canonical code) for a presented code that has a reset code's shape, else None. Six ASCII digits exactly as
+    sent are `digits`. Anything that reads as sixteen Crockford characters once it is upper-cased, its dashes and
+    spaces dropped and I, L, O read as 1, 1, 0 is `long`."""
+    if not isinstance(code, str) or not code.isascii():
+        return None
+    if len(code) == RESET_CODE_DIGITS_LENGTH and code.isdigit():
+        return RESET_CODE_FORM_DIGITS, code
+    canonical = device_codes.normalize(code, RESET_CODE_LONG_LENGTH)
+    return None if canonical is None else (RESET_CODE_FORM_LONG, canonical)
+
+
+def display_reset_code(code: str) -> str:
+    """A long code in four groups of four for a person to read; six digits as they are."""
+    if len(code) != RESET_CODE_LONG_LENGTH:
+        return code
+    return "-".join(code[i:i + 4] for i in range(0, RESET_CODE_LONG_LENGTH, 4))
 
 
 RESET_ABORT_DOMAIN = b"recto-owner-reset-abort-v1|"

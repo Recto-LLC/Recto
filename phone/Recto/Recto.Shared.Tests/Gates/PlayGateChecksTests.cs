@@ -377,6 +377,241 @@ public class PlayGateChecksTests
         }
     }
 
+    // --- the NDK floor: a library built by an old NDK is named, even when it is aligned ---
+
+    [Theory]
+    [InlineData("r20", 20)]
+    [InlineData("r27", 27)]
+    [InlineData("r27c", 27)]
+    [InlineData("r28b", 28)]
+    [InlineData("r9", 9)]
+    [InlineData("", 0)]
+    [InlineData("27", 0)]
+    [InlineData("rc1", 0)]
+    [InlineData("unnamed", 0)]
+    public void TheNdkNumber_IsReadFromItsName(string version, int major)
+    {
+        Assert.Equal(major, PlayGateChecks.NdkMajorOf(version));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void TheElfReader_ReadsTheNdkFromTheAndroidNote(bool is64)
+    {
+        var library = PlayGateChecks.ReadElf("libold.so", ElfWithNote(is64, AndroidNote(21, "r20", "5594570")));
+
+        Assert.True(library.Readable, library.Problem);
+        Assert.Equal("r20", library.NdkVersion);
+        Assert.Equal(20, library.NdkMajor);
+        Assert.Equal(1, library.LoadSegments);
+        Assert.Equal(0x4000, library.MinLoadAlignment);
+    }
+
+    [Fact]
+    public void ALibraryWithNoAndroidNote_NamesNoNdk()
+    {
+        Assert.Equal(string.Empty, PlayGateChecks.ReadElf("a.so", Elf(is64: true, 0x4000)).NdkVersion);
+        // Another vendor's note in the segment is not Android's.
+        var other = PlayGateChecks.ReadElf("b.so", ElfWithNote(true, Note("GNU", 3, new byte[20])));
+        Assert.True(other.Readable);
+        Assert.Equal(string.Empty, other.NdkVersion);
+        // The Android note after another note is still found.
+        var second = PlayGateChecks.ReadElf(
+            "c.so", ElfWithNote(true, Note("GNU", 3, new byte[20]).Concat(AndroidNote(24, "r27", "12077973")).ToArray()));
+        Assert.Equal("r27", second.NdkVersion);
+    }
+
+    [Fact]
+    public void AnAndroidNoteTooShortToNameAnNdk_ReadsAsUnnamed_AndIsBelowEveryFloor()
+    {
+        var library = PlayGateChecks.ReadElf("libancient.so", ElfWithNote(true, Note("Android", 1, new byte[4])));
+
+        Assert.Equal(PlayGateChecks.UnnamedNdk, library.NdkVersion);
+        Assert.False(PlayGateChecks.PassesNdkFloor(library, 27));
+        Assert.True(PlayGateChecks.PassesNdkFloor(library, 0));
+    }
+
+    [Fact]
+    public void AnOldNdkLibrary_FailsUnderTheFloor_ByNameAndNdk()
+    {
+        using var package = Package(
+            ("base/dex/classes.dex", new byte[100]),
+            ("base/lib/arm64-v8a/libold.so", ElfWithNote(true, AndroidNote(21, "r20", "5594570"))));
+
+        var failure = Assert.Single(PlayGateChecks.Failures(
+            PlayGateChecks.ReadPackage("app.aab", package), Limit, minNdkMajor: PlayGateChecks.DefaultMinNdkMajor));
+
+        Assert.Contains("base/lib/arm64-v8a/libold.so", failure);
+        Assert.Contains("NDK r20", failure);
+        Assert.Contains("r27 or newer", failure);
+        Assert.Equal(27, PlayGateChecks.DefaultMinNdkMajor);
+    }
+
+    [Theory]
+    [InlineData("r27")]
+    [InlineData("r27c")]
+    [InlineData("r28")]
+    [InlineData("r30b")]
+    public void ACurrentNdkLibrary_Passes(string ndk)
+    {
+        using var package = Package(
+            ("base/dex/classes.dex", new byte[100]),
+            ("base/lib/arm64-v8a/libnew.so", ElfWithNote(true, AndroidNote(24, ndk, "12077973"))));
+
+        Assert.Empty(PlayGateChecks.Failures(PlayGateChecks.ReadPackage("app.aab", package), Limit, minNdkMajor: 27));
+    }
+
+    [Fact]
+    public void ALibraryWithNoNote_IsListed_AndPasses()
+    {
+        using var package = Package(
+            ("base/dex/classes.dex", new byte[100]),
+            ("base/lib/arm64-v8a/libruntime.so", Elf(is64: true, 0x4000)));
+        var reading = PlayGateChecks.ReadPackage("app.aab", package);
+
+        Assert.Empty(PlayGateChecks.Failures(reading, Limit, minNdkMajor: 27));
+        Assert.Contains("libruntime.so: 64-bit, 1 loadable segment(s), smallest alignment 16,384 (16 KB: yes), no NDK note.",
+            PlayGateChecks.Describe(reading, Limit)[2]);
+    }
+
+    [Fact]
+    public void OneOldLibraryAmongGoodOnes_IsExactlyOneFailure_AndEveryLibraryIsListedWithItsNdk()
+    {
+        using var package = Package(
+            ("base/dex/classes.dex", new byte[100]),
+            ("base/lib/arm64-v8a/libnew.so", ElfWithNote(true, AndroidNote(24, "r27", "12077973"))),
+            ("base/lib/arm64-v8a/libold.so", ElfWithNote(true, AndroidNote(21, "r20", "5594570"))),
+            ("base/lib/arm64-v8a/libruntime.so", Elf(is64: true, 0x4000)),
+            ("base/lib/armeabi-v7a/libold32.so", ElfWithNote(false, AndroidNote(21, "r20", "5594570"))));
+        var reading = PlayGateChecks.ReadPackage("app.aab", package);
+
+        var failure = Assert.Single(PlayGateChecks.Failures(reading, Limit, minNdkMajor: 27));
+        Assert.Contains("libold.so", failure);
+        var lines = PlayGateChecks.Describe(reading, Limit);
+        Assert.Contains("libnew.so", lines[2]);
+        Assert.EndsWith("NDK r27.", lines[2]);
+        Assert.EndsWith("NDK r20.", lines[3]);
+        Assert.EndsWith("no NDK note.", lines[4]);
+        // A 32-bit library is listed with its NDK and never failed, as for the page size.
+        Assert.EndsWith("NDK r20.", lines[5]);
+    }
+
+    [Fact]
+    public void AFloorOfZero_JudgesNoNdk_AndTheOtherGatesStillFail()
+    {
+        using var package = Package(
+            ("base/dex/classes.dex", new byte[100]),
+            ("base/lib/arm64-v8a/libold.so", ElfWithNote(true, AndroidNote(21, "r20", "5594570"))),
+            ("base/lib/arm64-v8a/libunaligned.so", Elf(is64: true, 0x1000)));
+        var reading = PlayGateChecks.ReadPackage("app.aab", package);
+
+        var failure = Assert.Single(PlayGateChecks.Failures(reading, Limit, minNdkMajor: 0));
+        Assert.Contains("libunaligned.so", failure);
+        Assert.Contains("NDK r20", PlayGateChecks.Describe(reading, Limit)[2]);
+    }
+
+    [Fact]
+    public void AnOldNdkLibraryThatIsAlsoUnaligned_FailsBothGates()
+    {
+        var bytes = ElfWithNote(true, AndroidNote(21, "r20", "5594570"), loadAlignment: 0x1000);
+        using var package = Package(("base/dex/classes.dex", new byte[100]), ("base/lib/arm64-v8a/libboth.so", bytes));
+
+        var failures = PlayGateChecks.Failures(PlayGateChecks.ReadPackage("app.aab", package), Limit, minNdkMajor: 27);
+
+        Assert.Equal(2, failures.Count);
+        Assert.Contains("16 KB pages need", failures[0]);
+        Assert.Contains("NDK r20", failures[1]);
+    }
+
+    [Theory]
+    [InlineData(true, ulong.MaxValue - 4, 8ul)]        // an offset that would wrap an addition
+    [InlineData(true, 0x1000ul, 8ul)]                  // an offset past the end
+    [InlineData(true, 0x40ul, 0x100000ul)]             // a size past the end
+    [InlineData(true, 0ul, ulong.MaxValue)]
+    [InlineData(false, 0xFFFFFFF0ul, 0x20ul)]
+    [InlineData(false, 0x34ul, 0xFFFFFFFFul)]
+    public void ANoteSegmentOutsideTheFile_IsUnreadable_AndFailsWithoutThrowing(bool is64, ulong offset, ulong size)
+    {
+        var bytes = ElfWithNote(is64, AndroidNote(24, "r27", "12077973"));
+        var noteHeader = (is64 ? 0x40 : 0x34) + (is64 ? 0x38 : 0x20);
+        if (is64)
+        {
+            BitConverter.TryWriteBytes(bytes.AsSpan(noteHeader + 0x08), offset);
+            BitConverter.TryWriteBytes(bytes.AsSpan(noteHeader + 0x20), size);
+        }
+        else
+        {
+            BitConverter.TryWriteBytes(bytes.AsSpan(noteHeader + 0x04), (uint)offset);
+            BitConverter.TryWriteBytes(bytes.AsSpan(noteHeader + 0x10), (uint)size);
+        }
+
+        var library = PlayGateChecks.ReadElf("libbad.so", bytes);
+
+        Assert.False(library.Readable);
+        Assert.Equal("a note segment outside the file", library.Problem);
+        using var package = Package(("base/dex/classes.dex", new byte[100]), ("base/lib/arm64-v8a/libbad.so", bytes));
+        Assert.Contains("could not be read", Assert.Single(
+            PlayGateChecks.Failures(PlayGateChecks.ReadPackage("app.aab", package), Limit, minNdkMajor: 27)));
+    }
+
+    [Theory]
+    [InlineData(0xFFFFFFFFu, 4u)]      // a name that runs past the segment
+    [InlineData(8u, 0xFFFFFFFFu)]      // a description that runs past the segment
+    [InlineData(0xFFFFFFFCu, 0xFFFFFFFCu)]
+    [InlineData(0u, 0u)]
+    public void ANoteWhoseSizesRunPastItsSegment_EndsTheWalk_WithoutThrowing(uint nameSize, uint descSize)
+    {
+        var note = AndroidNote(24, "r27", "12077973");
+        BitConverter.TryWriteBytes(note.AsSpan(0), nameSize);
+        BitConverter.TryWriteBytes(note.AsSpan(4), descSize);
+
+        var library = PlayGateChecks.ReadElf("libodd.so", ElfWithNote(true, note));
+
+        Assert.True(library.Readable);
+        Assert.Equal(string.Empty, library.NdkVersion);
+    }
+
+    [Fact]
+    public void AnNdkNameThatIsNotText_IsShownAsQuestionMarks_AndIsBelowTheFloor()
+    {
+        var note = AndroidNote(24, "r27", "1");
+        // The first two bytes of the version: a control character and a byte above ASCII.
+        var versionAt = 12 + 8 + 4;
+        note[versionAt] = 0x1B;
+        note[versionAt + 1] = 0xC3;
+
+        var library = PlayGateChecks.ReadElf("libodd.so", ElfWithNote(true, note));
+
+        Assert.Equal("??7", library.NdkVersion);
+        Assert.Equal(0, library.NdkMajor);
+        Assert.False(PlayGateChecks.PassesNdkFloor(library, 27));
+    }
+
+    [Fact]
+    public void TheBuild_HandsTheGateItsNdkFloor_AndThePinnedLibraryIsTheRebuiltOne()
+    {
+        var project = File.ReadAllText(PhonePath("Recto", "Recto.csproj"));
+        Assert.Contains("<RectoPlayMinNdkMajor Condition=\"'$(RectoPlayMinNdkMajor)' == ''\">27</RectoPlayMinNdkMajor>", project);
+        Assert.Contains("MinNdkMajor=\"$(RectoPlayMinNdkMajor)\"", project);
+
+        var task = File.ReadAllText(PhonePath("..", "gates", "PlayGates.cs"));
+        Assert.Contains("public int MinNdkMajor { get; set; } = PlayGateChecks.DefaultMinNdkMajor;", task);
+        Assert.Contains("minNdkMajor: MinNdkMajor", task);
+
+        // DataStore and its siblings move together, at the first version whose library was rebuilt.
+        var props = File.ReadAllText(PhonePath("..", "Directory.Packages.props"));
+        var family = System.Text.RegularExpressions.Regex.Matches(
+            props, "<PackageVersion Include=\"Xamarin\\.AndroidX\\.DataStore[A-Za-z.]*\" Version=\"([^\"]+)\" />");
+        Assert.Equal(13, family.Count);
+        Assert.All(family, m => Assert.Equal("1.3.0", m.Groups[1].Value));
+        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
+                     props, "<PackageVersion Include=\"(Xamarin\\.AndroidX\\.(DataStore|Collection)[A-Za-z.]*)\""))
+        {
+            Assert.Contains("<PackageReference Include=\"" + m.Groups[1].Value + "\" />", project);
+        }
+    }
+
     // --- the build wiring, pinned from the project's text ---
 
     [Fact]
@@ -402,7 +637,8 @@ public class PlayGateChecksTests
         Assert.Contains(
             "<CheckPlayGates Packages=\"@(RectoPlayPackage)\" DexByteLimit=\"$(RectoPlayDexByteLimit)\" "
             + "SymbolsZip=\"$(OutDir)native-debug-symbols.zip\" "
-            + "NotOlderThan=\"@(IntermediateAssembly->'%(FullPath)')\" />",
+            + "NotOlderThan=\"@(IntermediateAssembly->'%(FullPath)')\" "
+            + "MinNdkMajor=\"$(RectoPlayMinNdkMajor)\" />",
             project);
         // The package checked is this build's: the signed package in the build's format, and the universal
         // .apk only when the format is aab and the formats also name apk. Named outright - no Exists() lets a
@@ -504,6 +740,52 @@ public class PlayGateChecksTests
             {
                 BitConverter.TryWriteBytes(bytes.AsSpan(at + 0x1C), (uint)headers[i].Align);
             }
+        }
+        return bytes;
+    }
+
+    /// <summary>One ELF note: the three sizes, the name with its NUL, the description, each padded to four bytes.</summary>
+    private static byte[] Note(string name, uint type, byte[] description)
+    {
+        var nameBytes = System.Text.Encoding.ASCII.GetBytes(name + "\0");
+        var namePadded = (nameBytes.Length + 3) & ~3;
+        var descPadded = (description.Length + 3) & ~3;
+        var note = new byte[12 + namePadded + descPadded];
+        BitConverter.TryWriteBytes(note.AsSpan(0), (uint)nameBytes.Length);
+        BitConverter.TryWriteBytes(note.AsSpan(4), (uint)description.Length);
+        BitConverter.TryWriteBytes(note.AsSpan(8), type);
+        nameBytes.CopyTo(note, 12);
+        description.CopyTo(note, 12 + namePadded);
+        return note;
+    }
+
+    /// <summary>The note the NDK writes: the API level, then 64 bytes of NDK version, then 64 of build number.</summary>
+    private static byte[] AndroidNote(uint api, string ndk, string build)
+    {
+        var description = new byte[4 + 64 + 64];
+        BitConverter.TryWriteBytes(description.AsSpan(0), api);
+        System.Text.Encoding.ASCII.GetBytes(ndk).CopyTo(description, 4);
+        System.Text.Encoding.ASCII.GetBytes(build).CopyTo(description, 4 + 64);
+        return Note("Android", 1, description);
+    }
+
+    /// <summary>A minimal ELF of one loadable segment and one note segment whose bytes follow the headers.</summary>
+    private static byte[] ElfWithNote(bool is64, byte[] notes, long loadAlignment = 0x4000)
+    {
+        var headers = Elf(is64, new[] { (Type: 1u, Align: loadAlignment), (Type: 4u, Align: 4L) });
+        var bytes = new byte[headers.Length + notes.Length];
+        headers.CopyTo(bytes, 0);
+        notes.CopyTo(bytes, headers.Length);
+        var noteHeader = (is64 ? 0x40 : 0x34) + (is64 ? 0x38 : 0x20);
+        if (is64)
+        {
+            BitConverter.TryWriteBytes(bytes.AsSpan(noteHeader + 0x08), (ulong)headers.Length);
+            BitConverter.TryWriteBytes(bytes.AsSpan(noteHeader + 0x20), (ulong)notes.Length);
+        }
+        else
+        {
+            BitConverter.TryWriteBytes(bytes.AsSpan(noteHeader + 0x04), (uint)headers.Length);
+            BitConverter.TryWriteBytes(bytes.AsSpan(noteHeader + 0x10), (uint)notes.Length);
         }
         return bytes;
     }

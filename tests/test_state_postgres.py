@@ -671,6 +671,24 @@ def test_update_phone_push_updates_only_a_held_phone(store):
     assert store.get_phone(p.phone_id) is None, "the push update re-inserted a removed phone"
 
 
+def test_clear_phone_push_drops_only_the_token_that_died(store):
+    p = _phone("dead-token", pubkey="dead_token_key_b64u")
+    from dataclasses import replace
+    p = replace(p, slot="recovery")
+    store.register_phone(p)
+    assert store.update_phone_push(p.phone_id, "tok-1", "fcm") is True
+    assert store.clear_phone_push(p.phone_id, "a-rotated-token") is False
+    assert store.clear_phone_push(p.phone_id, "") is False
+    assert store.get_phone(p.phone_id).push_token == "tok-1"
+    assert store.clear_phone_push(p.phone_id, "tok-1") is True
+    got = store.get_phone(p.phone_id)
+    assert (got.push_token, got.push_platform, got.slot) == (None, None, "recovery")
+    assert store.clear_phone_push(p.phone_id, "tok-1") is False
+    assert store.revoke_phone(p.phone_id) is True
+    assert store.clear_phone_push(p.phone_id, "tok-1") is False
+    assert store.get_phone(p.phone_id) is None, "the clear re-inserted a removed phone"
+
+
 def test_has_any_session(store):
     assert store.has_any_session() is False
     store.put_session(_session())

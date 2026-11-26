@@ -2189,6 +2189,12 @@ class StateStoreBase(ABC):
     @abstractmethod
     def update_phone_push(self, phone_id: str, push_token: str, push_platform: str) -> bool: ...
 
+    # Drop a token the push provider calls dead - only while it is still the phone's token (a rotation that landed
+    # meanwhile is kept), and never an upsert. Nothing else of the phone changes; it is found by polling until it
+    # sends a live token.
+    @abstractmethod
+    def clear_phone_push(self, phone_id: str, push_token: str) -> bool: ...
+
     # A signed act of a phone the store still holds. With a counter: True for exactly one caller per counter value, and
     # only while the phone still keeps ``key_id`` and has counted less. Without one: the act was accepted unasserted.
     @abstractmethod
@@ -3286,6 +3292,17 @@ class StateStore(StateStoreBase):
             phones = dict(self._phones)
             phones[phone_id] = replace(
                 phone, push_token=push_token, push_platform=push_platform, last_seen_unix=int(time.time()))
+            self._write_phones(phones)
+            self._phones = phones
+            return True
+
+    def clear_phone_push(self, phone_id: str, push_token: str) -> bool:
+        with self._lock:
+            phone = self._phones.get(phone_id)
+            if phone is None or not push_token or phone.push_token != push_token:
+                return False
+            phones = dict(self._phones)
+            phones[phone_id] = replace(phone, push_token=None, push_platform=None)
             self._write_phones(phones)
             self._phones = phones
             return True

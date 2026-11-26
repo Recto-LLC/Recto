@@ -94,7 +94,11 @@
 		<!-- 1.2.3 -> 1.2.4 (2026-11-25): a new pairing shows the bootloader where its identity key lives
 		     (Android key attestation, iOS App Attest) and can carry a test-device code; an approval card's
 		     validity ticks down while it is open. docs/release-notes-1.2.4.md has the whole list. -->
-		<ApplicationDisplayVersion>1.2.4</ApplicationDisplayVersion>
+		<!-- 1.2.4 -> 1.2.5: a push wake is shown as one fixed notification; the pairing screen takes an
+		     owner reset's sixteen-character code; a stop for an out-of-date reply re-verifies on resume and
+		     the banners say when the bootloader was last heard; DataStore's native library is the rebuilt
+		     one. docs/release-notes-1.2.5.md has the whole list. -->
+		<ApplicationDisplayVersion>1.2.5</ApplicationDisplayVersion>
 		<!-- Build 5 (2026-06-02): explicit Version pin to fix NU1105.
 		     MAUI auto-derives PackageVersion from ApplicationDisplayVersion
 		     on some TFMs but leaves the default 1.0.0 on others, producing:
@@ -384,8 +388,9 @@
 		     18 -> 19 (2026-10-30): Build 19 (1.2.1), the same two rules.
 		     19 -> 20 (2026-11-07): Build 20 (1.2.2), the same two rules.
 		     20 -> 21 (2026-11-24): Build 21 (1.2.3), the same two rules.
-		     21 -> 22 (2026-11-25): Build 22 (1.2.4), the same two rules. -->
-		<ApplicationVersion>22</ApplicationVersion>
+		     21 -> 22 (2026-11-25): Build 22 (1.2.4), the same two rules.
+		     22 -> 23: Build 23 (1.2.5), the same two rules. -->
+		<ApplicationVersion>23</ApplicationVersion>
 		<!-- Mirror ApplicationDisplayVersion + ApplicationVersion into the
 		     .NET assembly metadata so System.Reflection at runtime can
 		     read the build number. MAUI's <ApplicationVersion> ONLY
@@ -615,9 +620,26 @@
 		<PackageReference Include="Xamarin.AndroidX.SavedState.SavedState.Ktx" />
 		<!-- DataStore arrives through Firebase Messaging and ships a native library
 		     (libdatastore_shared_counter.so). Named directly so its version is this project's choice and not
-		     whatever the graph resolves: the pinned binding's library is aligned for 16 KB pages, and the
-		     Play gates below read that alignment from the package on every Release build. -->
+		     whatever the graph resolves: the pinned binding's library is aligned for 16 KB pages and built by
+		     NDK r27, and the Play gates below read both from the package on every Release build. -->
 		<PackageReference Include="Xamarin.AndroidX.DataStore.Core.Android" />
+		<!-- DataStore's siblings and the AndroidX Collection family, named so each resolves at the
+		     version Directory.Packages.props holds (see the comment there). -->
+		<PackageReference Include="Xamarin.AndroidX.DataStore" />
+		<PackageReference Include="Xamarin.AndroidX.DataStore.Android" />
+		<PackageReference Include="Xamarin.AndroidX.DataStore.Core" />
+		<PackageReference Include="Xamarin.AndroidX.DataStore.Core.Jvm" />
+		<PackageReference Include="Xamarin.AndroidX.DataStore.Core.OkIO" />
+		<PackageReference Include="Xamarin.AndroidX.DataStore.Core.OkIO.Jvm" />
+		<PackageReference Include="Xamarin.AndroidX.DataStore.Preferences" />
+		<PackageReference Include="Xamarin.AndroidX.DataStore.Preferences.Android" />
+		<PackageReference Include="Xamarin.AndroidX.DataStore.Preferences.Core" />
+		<PackageReference Include="Xamarin.AndroidX.DataStore.Preferences.Core.Android" />
+		<PackageReference Include="Xamarin.AndroidX.DataStore.Preferences.External.Protobuf" />
+		<PackageReference Include="Xamarin.AndroidX.DataStore.Preferences.Proto" />
+		<PackageReference Include="Xamarin.AndroidX.Collection" />
+		<PackageReference Include="Xamarin.AndroidX.Collection.Jvm" />
+		<PackageReference Include="Xamarin.AndroidX.Collection.Ktx" />
 		<!-- Build 6 (2026-06-02): CameraX 1.5+ + ML Kit BarcodeScanning
 		     package refs retired alongside the in-app QR scanner
 		     (Build 5's solution to the ZXing.Net.Maui crashes). The
@@ -649,7 +671,10 @@
 	       - the DEX sum (every .dex in the package, uncompressed) is under RectoPlayDexByteLimit;
 	       - every 64-bit native library's loadable segments are aligned to 16 KB (read from each .so's ELF
 	         program headers; a library that cannot be read fails too);
-	       - a bundle carries its R8 mapping.
+	       - a bundle carries its R8 mapping;
+	       - every 64-bit native library that names the Android NDK that built it (its .note.android.ident)
+	         names r$(RectoPlayMinNdkMajor) or newer: Play's 16 KB notice names a library from an older NDK
+	         even when its segments are aligned. A library with no such note is listed and not failed.
 	     The package checked is the one THIS build made: the signed package in AndroidPackageFormat, and
 	     the signed .apk beside it only when that format is aab and AndroidPackageFormats also names apk
 	     (the universal .apk the build then makes from the bundle). Each must exist and must not be older
@@ -659,14 +684,15 @@
 	     table, one folder per ABI, the layout Google documents for a hand-made symbols zip. No upload has
 	     confirmed that Play takes it. The build log lists the DEX sum and
 	     every library with its alignment ("Play gates:" lines; a Release build whose log has none did not
-	     run them). There is no switch that skips the gates; the limit is a property so a change to it is a
-	     visible edit. The checks are phone/gates/PlayGates.cs, compiled here as an inline task and compiled
+	     run them). There is no switch that skips the gates; the limit and the NDK floor are properties so a
+	     change to either is a visible edit. Raise the floor, never lower it. The checks are phone/gates/PlayGates.cs, compiled here as an inline task and compiled
 	     into Recto.Shared.Tests, which tests them.
 	     Two hooks, because the package is made in two places: a command-line build or publish signs it
 	     inside Build, and an IDE build signs it in SignAndroidPackage. Each hook runs the one gate target,
 	     and a target runs once per build. -->
 	<PropertyGroup>
 		<RectoPlayDexByteLimit Condition="'$(RectoPlayDexByteLimit)' == ''">10000000</RectoPlayDexByteLimit>
+		<RectoPlayMinNdkMajor Condition="'$(RectoPlayMinNdkMajor)' == ''">27</RectoPlayMinNdkMajor>
 	</PropertyGroup>
 	<UsingTask TaskName="CheckPlayGates" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
 		<Task>
@@ -680,6 +706,6 @@
 			<RectoPlayPackage Include="$(OutDir)$(ApplicationId)-Signed.$(AndroidPackageFormat)" />
 			<RectoPlayPackage Include="$(OutDir)$(ApplicationId)-Signed.apk" Condition="'$(AndroidPackageFormat)' == 'aab' AND $(AndroidPackageFormats.Contains('apk'))" />
 		</ItemGroup>
-		<CheckPlayGates Packages="@(RectoPlayPackage)" DexByteLimit="$(RectoPlayDexByteLimit)" SymbolsZip="$(OutDir)native-debug-symbols.zip" NotOlderThan="@(IntermediateAssembly->'%(FullPath)')" />
+		<CheckPlayGates Packages="@(RectoPlayPackage)" DexByteLimit="$(RectoPlayDexByteLimit)" SymbolsZip="$(OutDir)native-debug-symbols.zip" NotOlderThan="@(IntermediateAssembly->'%(FullPath)')" MinNdkMajor="$(RectoPlayMinNdkMajor)" />
 	</Target>
 </Project>

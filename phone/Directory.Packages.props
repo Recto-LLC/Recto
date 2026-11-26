@@ -30,11 +30,32 @@
     <PackageVersion Include="Xamarin.AndroidX.SavedState.SavedState.Ktx" Version="1.4.0.2" />
 
     <!-- DataStore's native library (libdatastore_shared_counter.so) must be aligned for 16 KB pages
-         (Google Play's requirement for 64-bit libraries). 1.2.0.2 is the version Firebase Messaging's
-         graph resolves today and its library is aligned; the direct reference in Recto.csproj holds it
-         there, and the build's Play gates read the alignment from the package. Raise it, never lower it,
-         and let the gates judge the new one. -->
-    <PackageVersion Include="Xamarin.AndroidX.DataStore.Core.Android" Version="1.2.0.2" />
+         (Google Play's requirement for 64-bit libraries) AND built by a current NDK: Play's 16 KB notice
+         named the library of 1.2.0.2 and of 1.2.1.1, which are aligned but were built with NDK r20.
+         1.3.0 is the first binding whose library was rebuilt (NDK r27, API 24, read from the package's
+         .note.android.ident). Firebase Messaging's own graph still resolves an older one, so the direct
+         reference in Recto.csproj holds this version, and the build's Play gates read both the alignment
+         and the NDK from the package. Raise it, never lower it, and let the gates judge the new one. -->
+    <PackageVersion Include="Xamarin.AndroidX.DataStore.Core.Android" Version="1.3.0" />
+    <!-- The rest of the DataStore family, held at the same version: each sibling bounds the others
+         to its own patch line, so one raised alone is NU1608. And the AndroidX Collection family,
+         because DataStore 1.3.0 needs Collection 1.7.0 while this MAUI's graph asks for 1.5.0.5 and
+         bounds it below 1.5.1 (NU1107 without these three). Raise each family together. -->
+    <PackageVersion Include="Xamarin.AndroidX.DataStore" Version="1.3.0" />
+    <PackageVersion Include="Xamarin.AndroidX.DataStore.Android" Version="1.3.0" />
+    <PackageVersion Include="Xamarin.AndroidX.DataStore.Core" Version="1.3.0" />
+    <PackageVersion Include="Xamarin.AndroidX.DataStore.Core.Jvm" Version="1.3.0" />
+    <PackageVersion Include="Xamarin.AndroidX.DataStore.Core.OkIO" Version="1.3.0" />
+    <PackageVersion Include="Xamarin.AndroidX.DataStore.Core.OkIO.Jvm" Version="1.3.0" />
+    <PackageVersion Include="Xamarin.AndroidX.DataStore.Preferences" Version="1.3.0" />
+    <PackageVersion Include="Xamarin.AndroidX.DataStore.Preferences.Android" Version="1.3.0" />
+    <PackageVersion Include="Xamarin.AndroidX.DataStore.Preferences.Core" Version="1.3.0" />
+    <PackageVersion Include="Xamarin.AndroidX.DataStore.Preferences.Core.Android" Version="1.3.0" />
+    <PackageVersion Include="Xamarin.AndroidX.DataStore.Preferences.External.Protobuf" Version="1.3.0" />
+    <PackageVersion Include="Xamarin.AndroidX.DataStore.Preferences.Proto" Version="1.3.0" />
+    <PackageVersion Include="Xamarin.AndroidX.Collection" Version="1.7.0" />
+    <PackageVersion Include="Xamarin.AndroidX.Collection.Jvm" Version="1.7.0" />
+    <PackageVersion Include="Xamarin.AndroidX.Collection.Ktx" Version="1.7.0" />
 
     <!-- ZXing.Net.Maui RETIRED Build 5 (2026-06-02). Both packages
          crashed on iOS first-permission-grant AND Android 16

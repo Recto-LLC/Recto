@@ -2,6 +2,7 @@ using Android.App;
 using Android.Content;
 using Android.Content.PM;
 using Android.OS;
+using Recto.Platforms.AndroidImpl;
 using Recto.Shared.Services;
 
 namespace Recto;
@@ -68,7 +69,20 @@ public class MainActivity : MauiAppCompatActivity
     protected override void OnCreate(Bundle? savedInstanceState)
     {
         base.OnCreate(savedInstanceState);
+        // A push wake is shown as a notification; Android 13 and later ask the
+        // person first. Asked only in a build where push is set up.
+        AndroidPushWakeNotice.RequestPermission(this);
         ProcessIntent(Intent);
+    }
+
+    /// <summary>
+    /// The app is in front: a push wake's notification has done its work and
+    /// is cleared. The cards are read over the paired channel, as always.
+    /// </summary>
+    protected override void OnResume()
+    {
+        base.OnResume();
+        AndroidPushWakeNotice.ClearShown(this);
     }
 
     /// <summary>
@@ -100,6 +114,14 @@ public class MainActivity : MauiAppCompatActivity
     private static void ProcessIntent(Intent? intent)
     {
         if (intent is null) return;
+        // A tap on the push wake's notification opens the app with the wake's
+        // marker and nothing else. A running page fetches its queue now; a
+        // cold start fetches when the page mounts. Nothing else is read.
+        if (AndroidPushWakeNotice.IsWakeTap(intent))
+        {
+            InMemoryPushWakeSignal.SignalWakeGlobal();
+            return;
+        }
         if (intent.Action != Intent.ActionView) return;
         var url = intent.DataString;
         var payload = PairDeepLinkParser.TryParse(url);

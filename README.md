@@ -407,6 +407,51 @@ still applies. The refusals are `device_evidence_required`,
 `too_many_wrong_codes`; for an act, `approval_evidence_invalid` (with a `reason`)
 and `approval_evidence_required`.
 
+### Waking a phone
+
+Phones find their cards by polling. A bootloader can also ask Apple or Google
+to wake the phone when a card is queued, so that a closed app shows something.
+The wake is one fixed notification - title `Recto`, text `Something is waiting
+for your approval in Recto.` - the same for every card: no card content, no
+service or agent name, no count, and a newer one replaces the one showing. The
+push services learn that a phone was woken, when, and those words. The card is
+always read from the bootloader, over the paired channel.
+
+Push is off unless a sender is fully set, and a bootloader with it off starts
+and serves as before (`Push wake: (disabled ...)` in the start banner).
+
+| Setting | What it is |
+|---|---|
+| `RECTO_PUSH_APNS_TEAM_ID`, `RECTO_PUSH_APNS_KEY_ID`, `RECTO_PUSH_APNS_BUNDLE_ID` | Apple team id, the APNs key's id, the app's bundle id. All three, or APNs is off |
+| `RECTO_PUSH_APNS_P8_FILE` | path to the APNs auth key (`.p8`), a secret: a read-only file, never its content in config |
+| `RECTO_PUSH_APNS_SANDBOX` | `1` for Apple's sandbox gateway (a development-signed build); otherwise production |
+| `RECTO_PUSH_FCM_PROJECT_ID` | the Firebase project id. Without it FCM is off |
+| `RECTO_PUSH_FCM_SA_FILE` | path to the service-account JSON, a secret: a read-only file, never its content in config |
+| `RECTO_PUSH_VISIBLE` | `0` sends the silent wake of earlier releases (nothing shown; a closed app is not woken). Default: the fixed notification |
+
+`RECTO_PUSH_APNS_P8_SECRET` and `RECTO_PUSH_FCM_SA_SECRET` name the same two
+secrets in a secret source instead of a file. The senders need the `push` extra
+(`pip install recto[push]`); the bootloader image installs it.
+
+A failed send never fails a request. It is logged as an outcome and counts,
+never a token, a key or a device's name:
+
+```
+push wake failed: platform=apns outcome=wrong_environment status=400 (this outcome 3; platform sent 0, failed 3)
+```
+
+| `outcome` | Meaning |
+|---|---|
+| `bad_credential` | the provider refused this sender's key or account: the `.p8`, its key id or team id, or the service account |
+| `wrong_environment` | the token belongs to the other APNs gateway (`RECTO_PUSH_APNS_SANDBOX`), another bundle id, or another Firebase project |
+| `dead_token` | the provider retired the token (the app was removed). It is dropped from the phone's record; the phone sends its new one when it next opens |
+| `throttled`, `provider_unavailable`, `unreachable` | the provider's limit, the provider's fault, or no answer at all |
+| `rejected`, `error` | refused for another reason; a fault in the sender itself |
+
+A push service delivers only to an app published under the account its key
+belongs to, so push wake serves the bootloaders of whoever publishes the phone
+build. Another operator's bootloader pairs the same app and is found by polling.
+
 ## The capability claim schema
 
 Standard JWT claims plus a `cap` extension.

@@ -18,9 +18,10 @@ Two flows mirrored from the C# side:
     minted before the kind extension.
 
   - `bootloader` kind — initial-trust handshake with a bootloader.
-    Code is 6 numeric digits (the demo sentinel "000000" is the only
-    canonical use case today). Bootloader URL required. URLs include
-    `&kind=bootloader`.
+    Code is 6 numeric digits (a pairing code, or the demo sentinel
+    "000000"), or the 16 Crockford base32 characters of an owner
+    reset's code in their canonical form (upper case, no separators).
+    Bootloader URL required. URLs include `&kind=bootloader`.
 
 The canonical demo URL (App Store reviewer flow):
 
@@ -115,8 +116,11 @@ class PairDeepLinkKind(str, Enum):
 # Phone consumer-side does its own canonicalization).
 _SERVICE_CODE_RE = re.compile(r"^[A-Za-z0-9]{8}$")
 
-# Bootloader-kind: 6 numeric digits.
-_BOOTLOADER_CODE_RE = re.compile(r"^[0-9]{6}$")
+# Bootloader-kind: 6 numeric digits, or an owner reset's code - 16
+# characters of Crockford base32 (no I, L, O, U), upper case, no
+# separators. The link carries the canonical form only; a person's
+# dashes and lower case are forgiven where a code is typed, not here.
+_BOOTLOADER_CODE_RE = re.compile(r"\A(?:[0-9]{6}|[0-9A-HJKMNP-TV-Z]{16})\Z")
 
 
 def build_pair_url(
@@ -129,7 +133,8 @@ def build_pair_url(
 
     Args:
         code: Pairing code. Shape varies by kind (8 alphanumeric for
-            service, 6 numeric for bootloader). Validated by regex;
+            service; 6 numeric, or the 16 characters of an owner
+            reset's code, for bootloader). Validated by regex;
             raises ValueError on shape mismatch.
         bootloader_url: Optional URL for service-kind; REQUIRED for
             bootloader-kind. Emitted verbatim (percent-encoded for URL
@@ -233,7 +238,8 @@ def _validate_code_shape(code: str, kind: PairDeepLinkKind) -> None:
     elif kind == PairDeepLinkKind.BOOTLOADER:
         if not _BOOTLOADER_CODE_RE.match(code):
             raise ValueError(
-                f"Bootloader-kind code must be [0-9]{{6}} (got: {code!r})."
+"Bootloader-kind code must be [0-9]{6}, or the 16 characters of an "
+                "owner reset's code."
             )
     else:
         raise ValueError(f"Unknown PairDeepLinkKind: {kind!r}")

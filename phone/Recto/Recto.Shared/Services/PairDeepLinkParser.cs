@@ -36,7 +36,8 @@ namespace Recto.Shared.Services;
 //     "revoke" hosts for other deep-link kinds; v1 only handles "pair").
 //   - query:
 //       `code` (required, shape varies by kind -- 8 alphanumeric for
-//         service, 6 numeric for bootloader)
+//         service; 6 numeric for bootloader, or an owner reset's 16
+//         characters, which reach the payload in their canonical form)
 //       `bootloader` (optional for service, required for bootloader -- URL)
 //       `kind` (optional, defaults to "service" for back-compat with
 //         v0.1 URLs that pre-date this extension)
@@ -57,7 +58,8 @@ namespace Recto.Shared.Services;
 //   - Reject if host != "pair" -- future hosts get their own parsers.
 //   - Reject if kind is present but not one of the canonical values
 //     ("service", "bootloader").
-//   - Per-kind code shape: service = [A-Za-z0-9]{8}; bootloader = [0-9]{6}.
+//   - Per-kind code shape: service = [A-Za-z0-9]{8}; bootloader = [0-9]{6},
+//     or an owner reset's code (PairingCodeShape.IsResetCode).
 //   - For kind=bootloader: bootloader URL is REQUIRED (the whole point of
 //     the kind is to pre-fill the URL so the reviewer doesn't type it).
 //   - For kind=service: bootloader URL is optional (informational at v1,
@@ -199,14 +201,19 @@ public static class PairDeepLinkParser
             // future bootloader-pair codes minted by real bootloaders use
             // the same shape). Sister of Home.razor's manual-input gate:
             // _pairingCode.Length == 6 && _pairingCode.All(char.IsDigit).
-            if (code.Length != 6)
+            // Since 1.2.5 also an owner reset's code, from the bootloader's
+            // own host: sixteen Crockford base32 characters, dashes and
+            // lower case forgiven. It reaches the payload canonical (upper
+            // case, no separators). bootstrap_pair_code below stays six
+            // digits: a consumer's link never carries an owner reset.
+            var resetCode = PairingCodeShape.NormalizeResetCode(code);
+            if (resetCode is not null)
+            {
+                code = resetCode;
+            }
+            else if (!PairingCodeShape.IsOwnerCode(code))
             {
                 return null;
-            }
-            for (int i = 0; i < code.Length; i++)
-            {
-                var c = code[i];
-                if (c < '0' || c > '9') return null;
             }
             // Bootloader URL is REQUIRED for this kind. The whole point of
             // the kind is to pre-fill the bootloader URL so the App Store

@@ -263,7 +263,7 @@ class TestTheResetRecordIsWrittenUnderTheLock:
         monkeypatch.setattr(st, "put_top_plane_record", watched)
         iid = _start_reset(plane)
         time.sleep(2.2)
-        armed = _arm(plane, iid)
+        armed = _arm(plane, iid, six_digits=True)
         wrong = f"{(int(armed['code']) + 1) % 1000000:06d}"
         _http("GET", f"{plane['base_url']}/v0.4/registration_challenge?code={wrong}",
               headers={"CF-Connecting-IP": "198.51.100.9"})
@@ -1108,7 +1108,7 @@ class TestAStaleCopyWrittenInsideTheLockLoses:
     def test_a_spent_nonce_survives_the_wrong_code_count(self, plane, monkeypatch) -> None:
         iid = _start_reset(plane)
         time.sleep(2.2)
-        armed = _arm(plane, iid)
+        armed = _arm(plane, iid, six_digits=True)
         st = plane["state"]
         local = _hook_next_lock(monkeypatch, st)
         orig = BootloaderHandler._count_reset_code_failure

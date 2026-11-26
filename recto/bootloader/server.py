@@ -1571,13 +1571,17 @@ class BootloaderHandler(BaseHTTPRequestHandler):
                 })
                 return
             binding: tuple[str, str] | None = None
+            # A reset code is remembered as spent in its canonical form, so the same code sent again with dashes or in
+            # lower case is still told it was used.
+            shaped = top_plane.normalize_reset_code(code)
+            spent_key = code if shaped is None else shaped[1]
             reset_rec = self._armed_reset_for_code(code)
             if reset_rec is not None:
                 # THE OWNER RESET'S CODE (hard rule 14.7): the challenge is bound to the reset's intent, so the fresh
                 # device's registration proof IS its signature in the reset's chain entry. Only the challenge's MAC is
                 # stored while the reset is armed: the challenge itself is the code holder's alone until it is spent.
                 # The record is re-read and written under the registry lock (always taken after the limiter's).
-                limiter.record_spent(code)
+                limiter.record_spent(spent_key)
                 challenge = f"{RESET_CHALLENGE_PREFIX}{reset_rec['intent']['intent_id']}:{secrets.token_hex(12)}"
                 with cfg.state.registry_lock():
                     current = cfg.state.get_top_plane_record(reset_rec["id"])
@@ -1601,13 +1605,13 @@ class BootloaderHandler(BaseHTTPRequestHandler):
                 # THE MEMBER PLANE (2026-09-30): a consumer's member code buys a MEMBER challenge - never an owner one.
                 # Since 2026-10-17 the challenge carries the code's (consumer, subject) binding (hard rule 15.n).
                 kind = "member"
-            elif limiter.was_spent(code):
+            elif limiter.was_spent(code) or limiter.was_spent(spent_key):
                 raise RegistrationExpiredError("pairing code already used - get a new code")
             else:
                 limiter.record_failure(client)
                 if client is not None:
-                    # Only the PUBLIC edge counts against a live reset code: a private-route or loopback pairer's typo
-                    # never burns the operator's reset.
+                    # Only the PUBLIC edge counts against a live six-digit reset code: a private-route or loopback
+                    # pairer's typo never burns the operator's reset. A long reset code is never counted against.
                     self._count_reset_code_failure()
                 raise RegistrationExpiredError("pairing code expired or invalid")
             limiter.record_spent(code)
@@ -2560,7 +2564,7 @@ class BootloaderHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.OK, {"resolved": True})
 
     def _notify_push(self, req: PendingRequest) -> None:
-        """Fire a best-effort silent wake push for a just-queued
+        """Fire a best-effort wake push for a just-queued
         request. Never raises, never blocks the request path -- the
         dispatcher does the send on a daemon thread and logs failures
         (push is a delivery HINT; polling remains the fallback).
@@ -9414,15 +9418,21 @@ class BootloaderHandler(BaseHTTPRequestHandler):
         return rec
 
     def _handle_owner_reset_arm(self, body: dict[str, Any]) -> None:
-        """POST /v0.4/owner/reset/arm {arm: {intent_id, slot, nonce, not_after}, passphrase_signature_b64u} - after
-        the window, a PASSPHRASE act (the host signs the arm; the intent id alone is in every owner card and arms
-        nothing). The one-time code is returned only in this response, and a live code is never replaced."""
+        """POST /v0.4/owner/reset/arm {arm: {intent_id, slot, nonce, not_after, code_form?}, passphrase_signature_b64u}
+        - after the window, a PASSPHRASE act (the host signs the arm; the intent id alone is in every owner card and
+        arms nothing). The one-time code is returned only in this response, and a live code is never replaced. The
+        signed arm names the code's form: `long` (sixteen characters, never burned) or `digits` (six, burned after a
+        few public wrong codes); an arm that names none is `digits`."""
         cfg = self.config
         cs = top_plane.require_sealed(cfg.state, expect_sealed_id=cfg.expect_sealed_id)
         arm = body.get("arm")
         if not isinstance(arm, dict) or not arm.get("intent_id") or not arm.get("slot") or not arm.get("nonce"):
             raise top_plane.TopPlaneRefused("owner_reset_invalid", "the arm names the intent, the slot and a nonce",
                                             400)
+        try:
+            code_form = top_plane.reset_code_form(arm)
+        except ValueError as exc:
+            raise top_plane.TopPlaneRefused("owner_reset_invalid", str(exc), 400) from None
         if not top_plane.verify_passphrase(cs, top_plane.reset_arm_digest(arm), body.get("passphrase_signature_b64u")):
             raise top_plane.TopPlaneRefused("top_plane_passphrase_invalid",
                                             "the passphrase's signature is not over this arm")
@@ -9446,25 +9456,30 @@ class BootloaderHandler(BaseHTTPRequestHandler):
             if rec["state"] == "armed" and int(rec.get("code_expires_at", 0)) > now:
                 raise top_plane.TopPlaneRefused(
                     "owner_reset_armed", "a code is live for this reset; it expires before another is armed", 409)
-            code = "".join(secrets.choice("0123456789") for _ in range(6))
+            code = top_plane.mint_reset_code(code_form)
             for card_id in rec.get("cards") or {}:
                 cfg.state.take_pending(card_id)
             rec.update(state="armed", slot=slot, code_hash=self._code_mac(code), code_expires_at=now + 600,
-                       challenge=None, challenge_mac=None, challenge_expires_at=0, fresh=None, code_attempts=0)
+                       challenge=None, challenge_mac=None, challenge_expires_at=0, fresh=None, code_attempts=0,
+                       code_form=code_form)
             cfg.state.put_top_plane_record(rec)
         logging.getLogger("recto.bootloader.top_plane").info("owner reset %s ARMED for slot=%s", rec["id"], slot)
-        self._send_json(HTTPStatus.OK, {"intent_id": rec["id"], "slot": slot, "code": code,
+        self._send_json(HTTPStatus.OK, {"intent_id": rec["id"], "slot": slot, "code": code, "code_form": code_form,
                                         "expires_at_unix": rec["code_expires_at"]})
 
     _RESET_CODE_ATTEMPTS = 5
 
     def _armed_reset_for_code(self, code: str) -> dict[str, Any] | None:
-        """The armed reset this code opens, or None. A code that opens nothing at all is counted by
-        _count_reset_code_failure; past the limit a live reset code is burned and the host arms again."""
+        """The armed reset this code opens, or None. The code is read in its canonical form and matched only against
+        resets armed in that form, by a constant-time compare of MACs. A code that opens nothing at all is counted by
+        _count_reset_code_failure against six-digit reset codes only; past the limit such a code is burned and the
+        host arms again. A long code is never counted against."""
         cfg = self.config
-        if cfg.state is None or not code or not code.isascii():
+        shaped = top_plane.normalize_reset_code(code)
+        if cfg.state is None or shaped is None:
             return None
-        mac = self._code_mac(code)
+        form, canonical = shaped
+        mac = self._code_mac(canonical)
         now = int(time.time())
         try:
             records = cfg.state.list_top_plane_records()
@@ -9474,16 +9489,18 @@ class BootloaderHandler(BaseHTTPRequestHandler):
             return None
         live = [r for r in records
                 if r.get("type") == "reset" and r.get("state") == "armed" and r.get("code_hash")
-                and int(r.get("code_expires_at", 0)) > now]
+                and int(r.get("code_expires_at", 0)) > now
+                and r.get("code_form", top_plane.RESET_CODE_FORM_DIGITS) == form]
         for rec in live:
             if hmac.compare_digest(rec["code_hash"], mac):
                 return rec
         return None
 
     def _count_reset_code_failure(self) -> None:
-        """A code that opened NOTHING (no reset, no owner or member code) counts against each live armed reset. The
-        records are re-read and written under the registry lock, so a count never writes back a stale copy over an
-        abort or a re-arm."""
+        """A code that opened NOTHING (no reset, no owner or member code) counts against each live reset armed with a
+        six-digit code. A reset armed with a long code is skipped: its code cannot be guessed inside its window, so a
+        stranger's wrong codes never take it from the operator. The records are re-read and written under the registry
+        lock, so a count never writes back a stale copy over an abort or a re-arm."""
         cfg = self.config
         if not cfg.state.supports_genesis_chain():
             return
@@ -9495,7 +9512,8 @@ class BootloaderHandler(BaseHTTPRequestHandler):
                 return  # named where it is read for a reset; a wrong ordinary code still counts at the limiter
             live = [r for r in records
                     if r.get("type") == "reset" and r.get("state") == "armed" and r.get("code_hash")
-                    and int(r.get("code_expires_at", 0)) > now and self._reset_open(r)]
+                    and int(r.get("code_expires_at", 0)) > now and self._reset_open(r)
+                    and r.get("code_form", top_plane.RESET_CODE_FORM_DIGITS) != top_plane.RESET_CODE_FORM_LONG]
             for rec in live:
                 rec = dict(rec)
                 rec["code_attempts"] = int(rec.get("code_attempts", 0)) + 1
@@ -9638,7 +9656,8 @@ class BootloaderHandler(BaseHTTPRequestHandler):
         # The registration challenge is released only after the fresh device spent it (state registered): while
         # armed it is the code holder's alone, never an open GET's.
         # One opaque state ('open') while waiting or armed, so an unauthenticated caller learns nothing about when a
-        # code is live (no timing oracle for the burn); the challenge only once the fresh device has spent it.
+        # code is live (no timing oracle for the burn of a six-digit code, and none for when a long one is worth
+        # trying); the challenge only once the fresh device has spent it.
         shown = "open" if rec["state"] in ("waiting", "armed") else rec["state"]
         out = {"intent": rec["intent"], "state": shown, "slot": rec.get("slot") if shown != "open" else None,
                "challenge": rec.get("challenge") if rec["state"] == "registered" else None}
@@ -10656,6 +10675,9 @@ def create_server(
     # service-account JSON) resolve through a SecretSource, never
     # inline config.
     BootloaderHandler.config.push_dispatcher = push_dispatcher
+    if push_dispatcher is not None and hasattr(push_dispatcher, "set_dead_token_handler"):
+        # A token the provider retired is dropped from its phone's record, so it is not sent to again.
+        push_dispatcher.set_dead_token_handler(state.clear_phone_push)
     _push_recarded(state, push_dispatcher, _recarded)
     # Multi-URL failover list emitted at registration (primary first).
     # Empty/None keeps the registration response byte-identical to v1.

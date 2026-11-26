@@ -26,6 +26,7 @@ KEY_NAME = "test_device.key"
 CODES_DIR = "test_device_codes"
 _ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"   # Crockford base32: no I, L, O, U
 _LENGTH = 10
+ALPHABET = _ALPHABET
 
 
 class TestCodeRefused(ValueError):
@@ -39,11 +40,11 @@ class TestCode:
     label: str
 
 
-def normalize(code: object) -> str | None:
+def normalize(code: object, length: int = _LENGTH) -> str | None:
     if not isinstance(code, str):
         return None
     text = code.upper().replace("-", "").replace(" ", "").translate(str.maketrans("ILO", "110"))
-    return text if len(text) == _LENGTH and set(text) <= set(_ALPHABET) else None
+    return text if len(text) == length and set(text) <= set(_ALPHABET) else None
 
 
 def ensure_key(state_dir: Path) -> None:

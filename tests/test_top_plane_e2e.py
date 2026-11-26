@@ -74,7 +74,8 @@ def _seed_chain(state, recovery: Phone) -> None:
 def _args(ctx, **kw):
     ns = types.SimpleNamespace(bootloader_url=ctx["base_url"], request=None, slot=None, slot_list=[],
                                every_owner_lost=False, confirm=None, window_seconds=2, arm=None, complete=None,
-                               public_key=None, algorithm="ed25519", pubkey_hex=None)
+                               public_key=None, algorithm="ed25519", pubkey_hex=None, six_digits=False,
+                               phone_url=None)
     for k, v in kw.items():
         setattr(ns, k, v)
     return ns
@@ -86,10 +87,19 @@ def _host(verb, ctx, *, phrase=PHRASE, answer="SIGN", **kw):
     return rc, out.getvalue(), err.getvalue()
 
 
-def _arm(ctx, iid: str, slot: str = "primary") -> dict:
-    rc, out, err = _host(tp.reset_arm, ctx, arm=iid, slot=slot)
+def _reset_code(out: str) -> str:
+    """The code as the host's terminal showed it, on its own line (never inside the printed answer)."""
+    shown = [line.split(":", 1)[1].strip() for line in out.splitlines() if line.strip().startswith("Reset code:")]
+    assert len(shown) == 1, out
+    return shown[0]
+
+
+def _arm(ctx, iid: str, slot: str = "primary", *, six_digits: bool = False) -> dict:
+    rc, out, err = _host(tp.reset_arm, ctx, arm=iid, slot=slot, six_digits=six_digits)
     assert rc == 0, err
-    return json.loads(next(line for line in out.splitlines() if line.strip().startswith("{")))
+    said = json.loads(next(line for line in out.splitlines() if line.strip().startswith("{")))
+    assert "code" not in said, "the code is shown on its own line, once"
+    return {**said, "code": _reset_code(out)}
 
 
 def _top_cards(ctx, phone: Phone) -> list[dict]:
@@ -295,9 +305,11 @@ class TestRule14_7TheOwnerResetWindow:
         assert status == 200 and body["state"] == "open" and body["challenge"] is None, body
 
     def test_wrong_codes_burn_a_live_arm_code(self, plane) -> None:
+        """The six-digit form, kept for one release behind --six-digits, still burns."""
         iid = self._start(plane)
         time.sleep(2.2)
-        armed = _arm(plane, iid)
+        armed = _arm(plane, iid, six_digits=True)
+        assert armed["code_form"] == "digits" and len(armed["code"]) == 6 and armed["code"].isdigit()
         for i in range(5):
             wrong = f"{(int(armed['code']) + 1 + i) % 1000000:06d}"
             _http("GET", f"{plane['base_url']}/v0.4/registration_challenge?code={wrong}",
@@ -309,7 +321,7 @@ class TestRule14_7TheOwnerResetWindow:
         """Only the PUBLIC edge counts: a private-route or loopback pairer's typos never burn the operator's reset."""
         iid = self._start(plane)
         time.sleep(2.2)
-        armed = _arm(plane, iid)
+        armed = _arm(plane, iid, six_digits=True)
         for i in range(8):
             wrong = f"{(int(armed['code']) + 1 + i) % 1000000:06d}"
             _http("GET", f"{plane['base_url']}/v0.4/registration_challenge?code={wrong}")

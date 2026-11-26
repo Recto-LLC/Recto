@@ -16,7 +16,8 @@ public class AppDelegate : MauiUIApplicationDelegate
     /// the device token can change, and iOS hands the current one to
     /// <see cref="RegisteredForRemoteNotifications"/>, where it is kept and a
     /// changed one is sent to the paired bootloader. No permission prompt
-    /// here; a silent wake needs none.
+    /// here: pairing asks for the alert permission once, and a wake still
+    /// reaches a running app without it.
     /// </summary>
     public override bool FinishedLaunching(UIApplication application, NSDictionary? launchOptions)
     {
@@ -98,10 +99,12 @@ public class AppDelegate : MauiUIApplicationDelegate
     }
 
     /// <summary>
-    /// Build 12 (2026-07-11, wave-C consumer) — receives silent-push wakes
-    /// from the bootloader on iOS. The bootloader sends a
-    /// <c>content-available: 1</c> background push when a pending request
-    /// lands; iOS calls this (even while backgrounded, given the
+    /// Build 12 (2026-07-11, wave-C consumer) — receives push wakes
+    /// from the bootloader on iOS. Since 1.2.5 the wake is an alert with one
+    /// fixed sentence (<see cref="PushWakeNotice"/>) that iOS itself draws
+    /// when the app is behind or closed; it keeps
+    /// <c>content-available: 1</c>, so when a pending request
+    /// lands iOS still calls this (even while backgrounded, given the
     /// <c>remote-notification</c> background mode + push entitlement), and we
     /// raise the process-wide wake signal so Home.razor fetches pending
     /// immediately instead of waiting out the poll interval.

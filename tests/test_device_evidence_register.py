@@ -36,7 +36,7 @@ from tests.device_evidence_builder import (  # noqa: E402
 )
 from tests.test_bootloader_owner_slots import AGENT_ID, AGENT_TOKEN, CONSUMER, _subject, serving  # noqa: E402
 from tests.test_bootloader_slots import Phone, _approve_owner_cards, _http  # noqa: E402
-from tests.test_top_plane_e2e import _approve, _host, _op_key, _seed_chain, _top_cards, tp  # noqa: E402
+from tests.test_top_plane_e2e import _approve, _host, _op_key, _reset_code, _seed_chain, _top_cards, tp  # noqa: E402
 
 REAL_DEVICE_DEFAULT = True
 
@@ -501,7 +501,7 @@ def test_an_owner_reset_asks_its_fresh_device(tmp_path, android, way) -> None:
             time.sleep(1.5)
             rc, out, err = _host(tp.reset_arm, c, arm=iid, slot="primary")
             assert rc == 0, err
-            code = json.loads(next(line for line in out.splitlines() if line.strip().startswith("{")))["code"]
+            code = _reset_code(out)
             status, chal = _http("GET", f"{c['base_url']}/v0.4/registration_challenge?code={code}")
             assert status == 200, chal
             fresh, challenge = HwPhone("fresh"), chal["challenge_b64u"]

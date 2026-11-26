@@ -17,6 +17,11 @@
 //   4. The package is this build's: one older than the app assembly the
 //      build compiled is refused, so a leftover from an earlier build is
 //      never the one that passes.
+//   5. The NDK floor: a 64-bit native library that says which Android NDK
+//      built it (the .note.android.ident note) says r27 or newer. Play's
+//      16 KB notice names a library built by an older NDK even when its
+//      segments are aligned. A library with no such note (the .NET runtime's
+//      own are linked without one) is listed and never failed for it.
 //
 // One file, two readers. Recto.csproj compiles it as an inline build task
 // (RoslynCodeTaskFactory, which builds against netstandard2.0: no records, no
@@ -35,7 +40,8 @@ namespace Recto.Build
     public sealed class NativeLibraryReading
     {
         public NativeLibraryReading(
-            string entry, bool readable, bool is64Bit, int loadSegments, long minLoadAlignment, bool hasSymbolTable, string problem)
+            string entry, bool readable, bool is64Bit, int loadSegments, long minLoadAlignment, bool hasSymbolTable, string problem,
+            string ndkVersion = "", int ndkMajor = 0)
         {
             Entry = entry;
             Readable = readable;
@@ -44,7 +50,19 @@ namespace Recto.Build
             MinLoadAlignment = minLoadAlignment;
             HasSymbolTable = hasSymbolTable;
             Problem = problem;
+            NdkVersion = ndkVersion;
+            NdkMajor = ndkMajor;
         }
+
+        /// <summary>
+        /// The NDK the library's Android note names ("r27", "r28b"); empty
+        /// when the file carries no Android note. A note too short to name an
+        /// NDK reads as <see cref="PlayGateChecks.UnnamedNdk"/>.
+        /// </summary>
+        public string NdkVersion { get; }
+
+        /// <summary>The number in <see cref="NdkVersion"/>; zero when there is no note, or its version is not rNN.</summary>
+        public int NdkMajor { get; }
 
         /// <summary>The library's path inside the package.</summary>
         public string Entry { get; }
@@ -107,7 +125,14 @@ namespace Recto.Build
         /// <summary>Where an app bundle carries the R8 mapping Play reads.</summary>
         public const string ProguardMapEntry = "BUNDLE-METADATA/com.android.tools.build.obfuscation/proguard.map";
 
+        /// <summary>The oldest NDK a 64-bit library's Android note may name.</summary>
+        public const int DefaultMinNdkMajor = 27;
+
+        /// <summary>What an Android note that names no NDK reads as: older than any floor.</summary>
+        public const string UnnamedNdk = "unnamed";
+
         private const int PtLoad = 1;
+        private const int PtNote = 4;
         private const int ShtSymtab = 2;
 
         /// <summary>Reads a package file from disk.</summary>
@@ -193,9 +218,26 @@ namespace Recto.Build
 
             var loads = 0;
             long min = long.MaxValue;
+            var ndkVersion = string.Empty;
             for (var i = 0; i < entryCount; i++)
             {
                 var at = (int)(tableOffset + ((long)entrySize * i));
+                if (ReadUInt32(bytes, at) == PtNote)
+                {
+                    ulong noteOffset = is64 ? ReadUInt64(bytes, at + 0x08) : ReadUInt32(bytes, at + 0x04);
+                    ulong noteSize = is64 ? ReadUInt64(bytes, at + 0x20) : ReadUInt32(bytes, at + 0x10);
+                    // By subtraction, as for the tables: no addition to wrap.
+                    if (noteSize > (ulong)bytes.Length || noteOffset > (ulong)bytes.Length - noteSize)
+                    {
+                        return Unreadable(entry, "a note segment outside the file");
+                    }
+                    var found = AndroidNdkNote(bytes, (int)noteOffset, (int)noteSize);
+                    if (found.Length != 0)
+                    {
+                        ndkVersion = found;
+                    }
+                    continue;
+                }
                 if (ReadUInt32(bytes, at) != PtLoad)
                 {
                     continue;
@@ -212,8 +254,88 @@ namespace Recto.Build
             {
                 return Unreadable(entry, "no loadable segment");
             }
-            return new NativeLibraryReading(entry, true, is64, loads, min, HasSymbolTable(bytes, is64), string.Empty);
+            return new NativeLibraryReading(
+                entry, true, is64, loads, min, HasSymbolTable(bytes, is64), string.Empty, ndkVersion, NdkMajorOf(ndkVersion));
         }
+
+        /// <summary>
+        /// The NDK version in a note segment's Android ident note (name
+        /// "Android", type 1: a 4-byte API level, then 64 bytes of NDK
+        /// version, then 64 of build number). Empty when the segment holds no
+        /// such note; <see cref="UnnamedNdk"/> when the note is too short to
+        /// name one. Reads only inside [start, start + size): a note whose
+        /// sizes run past the segment ends the walk.
+        /// </summary>
+        private static string AndroidNdkNote(byte[] bytes, int start, int size)
+        {
+            long at = start;
+            long end = (long)start + size;
+            while (end - at >= 12)
+            {
+                long nameSize = ReadUInt32(bytes, (int)at);
+                long descSize = ReadUInt32(bytes, (int)at + 4);
+                var type = ReadUInt32(bytes, (int)at + 8);
+                long nameAt = at + 12;
+                long descAt = nameAt + ((nameSize + 3) & ~3L);
+                long next = descAt + ((descSize + 3) & ~3L);
+                if (nameSize > end - nameAt || descAt > end || descSize > end - descAt)
+                {
+                    break;
+                }
+                if (type == 1 && nameSize == 8 && bytes[nameAt] == (byte)'A' && bytes[nameAt + 1] == (byte)'n'
+                    && bytes[nameAt + 2] == (byte)'d' && bytes[nameAt + 3] == (byte)'r' && bytes[nameAt + 4] == (byte)'o'
+                    && bytes[nameAt + 5] == (byte)'i' && bytes[nameAt + 6] == (byte)'d' && bytes[nameAt + 7] == 0)
+                {
+                    if (descSize < 4 + 64)
+                    {
+                        return UnnamedNdk;
+                    }
+                    var text = new System.Text.StringBuilder();
+                    for (var i = 0; i < 64; i++)
+                    {
+                        var c = bytes[descAt + 4 + i];
+                        if (c == 0)
+                        {
+                            break;
+                        }
+                        // Printable ASCII only: the text goes into the build log.
+                        text.Append(c >= 0x21 && c <= 0x7E ? (char)c : '?');
+                    }
+                    return text.Length == 0 ? UnnamedNdk : text.ToString();
+                }
+                if (next <= at)
+                {
+                    break;
+                }
+                at = next;
+            }
+            return string.Empty;
+        }
+
+        /// <summary>27 for "r27" or "r27c"; zero for anything that is not r followed by digits.</summary>
+        public static int NdkMajorOf(string ndkVersion)
+        {
+            if (ndkVersion.Length < 2 || ndkVersion[0] != 'r')
+            {
+                return 0;
+            }
+            var major = 0;
+            var digits = 0;
+            for (var i = 1; i < ndkVersion.Length && ndkVersion[i] >= '0' && ndkVersion[i] <= '9' && digits < 4; i++, digits++)
+            {
+                major = (major * 10) + (ndkVersion[i] - '0');
+            }
+            return digits == 0 ? 0 : major;
+        }
+
+        /// <summary>
+        /// True when the library meets the NDK floor: it is 32-bit, or it
+        /// carries no Android note, or its note names an NDK at or above the
+        /// floor. A note that names no readable NDK is below every floor. A
+        /// floor of zero judges nothing.
+        /// </summary>
+        public static bool PassesNdkFloor(NativeLibraryReading library, int minNdkMajor)
+            => minNdkMajor <= 0 || !library.Is64Bit || library.NdkVersion.Length == 0 || library.NdkMajor >= minNdkMajor;
 
         /// <summary>True when the section header table lists a symbol table. A table that cannot be read is "none".</summary>
         private static bool HasSymbolTable(byte[] bytes, bool is64)
@@ -323,7 +445,8 @@ namespace Recto.Build
             => library.Readable && (!library.Is64Bit || library.MinLoadAlignment >= PageSize16Kb);
 
         /// <summary>Every way the package misses a gate, one sentence each; empty when it passes.</summary>
-        public static List<string> Failures(PlayPackageReading reading, long dexByteLimit, bool requireProguardMap = false)
+        public static List<string> Failures(
+            PlayPackageReading reading, long dexByteLimit, bool requireProguardMap = false, int minNdkMajor = 0)
         {
             var failures = new List<string>();
             if (requireProguardMap && reading.ProguardMapBytes <= 0)
@@ -354,6 +477,14 @@ namespace Recto.Build
                         "{0}: {1} is 64-bit with a loadable segment aligned to {2:N0} bytes; 16 KB pages need {3:N0}.",
                         reading.Package, library.Entry, library.MinLoadAlignment, PageSize16Kb));
                 }
+                if (library.Readable && !PassesNdkFloor(library, minNdkMajor))
+                {
+                    failures.Add(string.Format(
+                        CultureInfo.InvariantCulture,
+                        "{0}: {1} is 64-bit and was built with Android NDK {2}; Play's 16 KB check wants r{3} or newer. "
+                        + "Raise the package that ships it to a version with a rebuilt library.",
+                        reading.Package, library.Entry, library.NdkVersion, minNdkMajor));
+                }
             }
             return failures;
         }
@@ -376,10 +507,11 @@ namespace Recto.Build
                 lines.Add(library.Readable
                     ? string.Format(
                         CultureInfo.InvariantCulture,
-                        "Play gates: {0}: {1}: {2}, {3} loadable segment(s), smallest alignment {4:N0}{5}.",
+                        "Play gates: {0}: {1}: {2}, {3} loadable segment(s), smallest alignment {4:N0}{5}, {6}.",
                         reading.Package, library.Entry, library.Is64Bit ? "64-bit" : "32-bit", library.LoadSegments,
                         library.MinLoadAlignment,
-                        library.Is64Bit ? (PassesPageSize(library) ? " (16 KB: yes)" : " (16 KB: NO)") : " (not judged)")
+                        library.Is64Bit ? (PassesPageSize(library) ? " (16 KB: yes)" : " (16 KB: NO)") : " (not judged)",
+                        library.NdkVersion.Length == 0 ? "no NDK note" : "NDK " + library.NdkVersion)
                     : "Play gates: " + reading.Package + ": " + library.Entry + ": unreadable (" + library.Problem + ").");
             }
             return lines;
@@ -402,7 +534,8 @@ namespace Recto.Build
     /// <summary>
     /// The build task: reads each package, logs what it found, and fails the
     /// build on any miss. A build that hands it no package fails too: a gate
-    /// that checked nothing has not passed. An app bundle must carry its R8
+    /// that checked nothing has not passed. A 64-bit library whose Android
+    /// note names an NDK older than <see cref="MinNdkMajor"/> is a miss. An app bundle must carry its R8
     /// mapping; when <see cref="NotOlderThan"/> is given, a package older
     /// than that file is refused; when <see cref="SymbolsZip"/> is given, the
     /// first package's unstripped native libraries are written there.
@@ -416,6 +549,9 @@ namespace Recto.Build
         public string SymbolsZip { get; set; } = string.Empty;
 
         public string NotOlderThan { get; set; } = string.Empty;
+
+        /// <summary>The oldest NDK a 64-bit library's Android note may name.</summary>
+        public int MinNdkMajor { get; set; } = PlayGateChecks.DefaultMinNdkMajor;
 
         public override bool Execute()
         {
@@ -465,7 +601,7 @@ namespace Recto.Build
                     Log.LogMessage(Microsoft.Build.Framework.MessageImportance.High, line);
                 }
                 var isBundle = package.ItemSpec.EndsWith(".aab", StringComparison.OrdinalIgnoreCase);
-                foreach (var failure in PlayGateChecks.Failures(reading, DexByteLimit, requireProguardMap: isBundle))
+                foreach (var failure in PlayGateChecks.Failures(reading, DexByteLimit, requireProguardMap: isBundle, minNdkMajor: MinNdkMajor))
                 {
                     Log.LogError("Play gates: " + failure);
                 }

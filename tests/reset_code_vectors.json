@@ -1,0 +1,33 @@
+{
+  "about": "How a code typed at the pairing door is read. The bootloader (recto.bootloader.top_plane.normalize_reset_code) and the phone app (PairingCodeShape) both run these, so the two cannot drift. form: long = an owner reset's sixteen-character code, digits = six decimal digits, null = neither.",
+  "alphabet": "0123456789ABCDEFGHJKMNPQRSTVWXYZ",
+  "vectors": [
+    {"input": "ABCDEFGHJKMNPQRS", "form": "long", "canonical": "ABCDEFGHJKMNPQRS", "display": "ABCD-EFGH-JKMN-PQRS"},
+    {"input": "ABCD-EFGH-JKMN-PQRS", "form": "long", "canonical": "ABCDEFGHJKMNPQRS", "display": "ABCD-EFGH-JKMN-PQRS"},
+    {"input": "abcdefghjkmnpqrs", "form": "long", "canonical": "ABCDEFGHJKMNPQRS", "display": "ABCD-EFGH-JKMN-PQRS"},
+    {"input": "abcd efgh jkmn pqrs", "form": "long", "canonical": "ABCDEFGHJKMNPQRS", "display": "ABCD-EFGH-JKMN-PQRS"},
+    {"input": " abcd-efgh - jkmn-pqrs ", "form": "long", "canonical": "ABCDEFGHJKMNPQRS", "display": "ABCD-EFGH-JKMN-PQRS"},
+    {"input": "TVWX-YZ01-2345-6789", "form": "long", "canonical": "TVWXYZ0123456789", "display": "TVWX-YZ01-2345-6789"},
+    {"input": "ILO0-1234-5678-9ABC", "form": "long", "canonical": "1100123456789ABC", "display": "1100-1234-5678-9ABC"},
+    {"input": "ilo0123456789abc", "form": "long", "canonical": "1100123456789ABC", "display": "1100-1234-5678-9ABC"},
+    {"input": "0123456789012345", "form": "long", "canonical": "0123456789012345", "display": "0123-4567-8901-2345"},
+    {"input": "123456", "form": "digits", "canonical": "123456", "display": "123456"},
+    {"input": "000000", "form": "digits", "canonical": "000000", "display": "000000"},
+    {"input": "", "form": null, "canonical": null, "display": null},
+    {"input": "12345", "form": null, "canonical": null, "display": null},
+    {"input": "1234567", "form": null, "canonical": null, "display": null},
+    {"input": "12-34-56", "form": null, "canonical": null, "display": null},
+    {"input": " 123456", "form": null, "canonical": null, "display": null},
+    {"input": "12345O", "form": null, "canonical": null, "display": null},
+    {"input": "ABCDEFGHJKMNPQR", "form": null, "canonical": null, "display": null},
+    {"input": "ABCDEFGHJKMNPQRST", "form": null, "canonical": null, "display": null},
+    {"input": "ABCDEFGHJKMNPQRU", "form": null, "canonical": null, "display": null},
+    {"input": "ABCD_EFGH_JKMN_PQRS", "form": null, "canonical": null, "display": null},
+    {"input": "ABCDEFGHJKMNPQRS\t", "form": null, "canonical": null, "display": null},
+    {"input": "ABCDEFGHJKMNPQRS\n", "form": null, "canonical": null, "display": null},
+    {"input": "ABCDEFGHJKMNPQR\u0131", "form": null, "canonical": null, "display": null},
+    {"input": "ABCDEFGHJKMNPQR\u0663", "form": null, "canonical": null, "display": null},
+    {"input": "\uff11\uff12\uff13\uff14\uff15\uff16", "form": null, "canonical": null, "display": null},
+    {"input": "12345\u0663", "form": null, "canonical": null, "display": null}
+  ]
+}

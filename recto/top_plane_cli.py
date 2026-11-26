@@ -133,7 +133,9 @@ def _sign(chain: _Chain, message: bytes, lines: list[str], *, out: TextIO, err: 
     return top_plane.b64u(sig)
 
 
-def _post(base: str, path: str, body: dict[str, Any], *, out: TextIO, err: TextIO) -> int:
+def _post(base: str, path: str, body: dict[str, Any], *, out: TextIO, err: TextIO,
+          held: dict[str, Any] | None = None) -> int:
+    """`held` names fields of a 200 answer that are NOT printed with it: they are moved into `held` for the caller."""
     status, resp = _http("POST", f"{base}{path}", body)
     if status == 202 and (resp.get("committed") or resp.get("appended")):
         print("  COMMITTED: the entry is on the chain; the registry work did not finish. It finishes when this is "
@@ -143,6 +145,9 @@ def _post(base: str, path: str, body: dict[str, Any], *, out: TextIO, err: TextI
     if status != 200:
         print(f"REFUSED by the bootloader: HTTP {status} {resp.get('error')}: {resp.get('detail')}", file=err)
         return 1
+    if held is not None:
+        for name in list(held):
+            held[name] = resp.pop(name, None)
     print(f"  {json.dumps(resp, sort_keys=True)}", file=out)
     return 0
 
@@ -321,16 +326,75 @@ def reset_arm(args: Any, *, out: TextIO, err: TextIO, read_passphrase: ReadPassp
     if not args.slot:
         print("REFUSING: name the --slot the fresh phone takes", file=err)
         return 2
-    arm = {"intent_id": args.arm, "slot": args.slot, **_fresh()}
+    form = top_plane.RESET_CODE_FORM_DIGITS if getattr(args, "six_digits", False) else top_plane.RESET_CODE_FORM_LONG
+    arm = {"intent_id": args.arm, "slot": args.slot, "code_form": form, **_fresh()}
     sig = _sign(chain, top_plane.reset_arm_digest(arm), [
         f"ARM owner reset {args.arm} for the {args.slot} slot", "a one-time code (10 minutes) for the fresh phone",
+        ("the code is SIX DIGITS: a few wrong codes from the public network burn it" if form == "digits"
+         else "the code is sixteen characters: wrong codes never burn it"),
     ], out=out, err=err, read_passphrase=read_passphrase, confirm=confirm)
     if sig is None:
         return 1
-    rc = _post(base, "/v0.4/owner/reset/arm", {"arm": arm, "passphrase_signature_b64u": sig}, out=out, err=err)
+    held: dict[str, Any] = {"code": None}
+    rc = _post(base, "/v0.4/owner/reset/arm", {"arm": arm, "passphrase_signature_b64u": sig}, out=out, err=err,
+               held=held)
     if rc == 0:
+        _show_reset_code(args, base, str(held["code"] or ""), form, out=out)
         print("  Pair the fresh phone with that code now (10 minutes), then run --complete.", file=out)
     return rc
+
+
+def _show_reset_code(args: Any, base: str, code: str, asked_form: str, *, out: TextIO) -> None:
+    """The code, once, to the signer's terminal: grouped for typing, and as the pairing link's QR when it can be drawn.
+    Nothing here is written to a file or a log."""
+    shaped = top_plane.normalize_reset_code(code)
+    if shaped is None:
+        print("  The bootloader returned no code this host can read; abort the reset's arm and update the host.",
+              file=out)
+        return
+    form, canonical = shaped
+    if form != asked_form:
+        print("  NOTE: this bootloader mints six digits only (it is older than the long code).", file=out)
+    print(f"  Reset code: {top_plane.display_reset_code(canonical)}", file=out)
+    if form == top_plane.RESET_CODE_FORM_LONG:
+        print("  On the fresh phone: Pair, then \"Owner reset\" under the pairing code. Dashes and lower case are "
+              "fine.", file=out)
+    phone_url = (getattr(args, "phone_url", None) or "").strip().rstrip("/") or _reachable(base)
+    if phone_url is None:
+        print("  No QR: name the address the phone reaches this bootloader at with --phone-url.", file=out)
+        return
+    from recto.qr.pair import build_bootloader_pair_url
+    drawn = _terminal_qr(build_bootloader_pair_url(canonical, phone_url))
+    if drawn is None:
+        print("  No QR: `pip install recto[qr]` draws one here. Type the code instead.", file=out)
+        return
+    try:
+        print(f"  Or scan this with the fresh phone's camera (it opens Recto on {phone_url}):", file=out)
+        print(drawn, file=out)
+    except UnicodeEncodeError:
+        print("  No QR: this terminal cannot draw one. Type the code instead.", file=out)
+
+
+def _reachable(base: str) -> str | None:
+    """The CLI's own URL, unless it is this host's loopback - a phone cannot reach that."""
+    from urllib.parse import urlsplit
+    host = (urlsplit(base).hostname or "").lower()
+    return None if host in ("", "localhost", "::1") or host.startswith("127.") else base
+
+
+def _terminal_qr(text: str) -> str | None:
+    """The text as a QR drawn in block characters, or None when the optional `qr` extra is not installed."""
+    try:
+        import qrcode
+    except ImportError:
+        return None
+    import io
+    qr = qrcode.QRCode(border=2)
+    qr.add_data(text)
+    qr.make(fit=True)
+    buf = io.StringIO()
+    qr.print_ascii(out=buf, invert=True)
+    return buf.getvalue().rstrip("\n")
 
 
 def reset_abort(args: Any, *, out: TextIO, err: TextIO, read_passphrase: ReadPassphrase, confirm: Confirm) -> int:

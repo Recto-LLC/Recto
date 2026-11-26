@@ -34,7 +34,7 @@ from tests.device_evidence_builder import APP_ID, AndroidVendor, AppleVendor, b6
 from tests.test_bootloader_owner_slots import CONSUMER, _subject, serving  # noqa: E402
 from tests.test_bootloader_slots import Phone, _approve_owner_cards, _http  # noqa: E402
 from tests.test_device_evidence_register import HwPhone, _member_challenge  # noqa: E402
-from tests.test_top_plane_e2e import _approve, _host, _op_key, _seed_chain, _top_cards, tp  # noqa: E402
+from tests.test_top_plane_e2e import _approve, _host, _op_key, _reset_code, _seed_chain, _top_cards, tp  # noqa: E402
 
 REAL_DEVICE_DEFAULT = True
 
@@ -370,7 +370,7 @@ def test_the_resets_cancel_and_its_fresh_device(tmp_path, apple, mode) -> None:
 
             iid = start("primary", p.ref)
             time.sleep(1.5)
-            code = _said(_host(tp.reset_arm, c, arm=iid, slot="primary")[1])["code"]
+            code = _reset_code(_host(tp.reset_arm, c, arm=iid, slot="primary")[1])
             challenge = _http("GET", f"{c['base_url']}/v0.4/registration_challenge?code={code}")[1]["challenge_b64u"]
             fresh = IPhone(HwPhone("fresh"), apple)
             assert fresh.enrol(c, challenge=challenge)[0] == 202

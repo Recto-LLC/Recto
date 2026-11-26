@@ -881,7 +881,15 @@ def build_parser() -> argparse.ArgumentParser:
              "carded and may cancel it; it completes no sooner than the window (72 h). Name --slot or "
              "--every-owner-lost, and the phones lost with --confirm.")
     p_owner_reset.add_argument("--arm", default=None, metavar="INTENT_ID",
-                               help="TOP PLANE: after the window, a one-time code for the fresh phone.")
+                               help="TOP PLANE: after the window, a one-time code for the fresh phone: sixteen "
+                                    "characters, shown grouped and as a QR.")
+    p_owner_reset.add_argument("--six-digits", action="store_true",
+                               help="With --arm: a six-digit code instead, for a fresh phone whose app cannot take "
+                                    "the long one. A few wrong codes from the public network burn it. This switch "
+                                    "goes in the next release.")
+    p_owner_reset.add_argument("--phone-url", default=None,
+                               help="With --arm: the address the fresh phone reaches this bootloader at; the QR "
+                                    "carries it. Default: --bootloader-url, unless that is this host's loopback.")
     p_owner_reset.add_argument("--complete", default=None, metavar="INTENT_ID",
                                help="TOP PLANE: seat the fresh phone - the passphrase over the reset's chain entry.")
     p_owner_reset.add_argument("--abort", default=None, metavar="INTENT_ID",
@@ -1010,6 +1018,9 @@ def main(
             if args.bootloader_command == "test-device":
                 return _cmd_bootloader_test_device(args, out=out, err=err)
             if args.bootloader_command == "owner-reset":
+                if (args.six_digits or args.phone_url) and not args.arm:
+                    print("recto bootloader owner-reset: --six-digits and --phone-url go with --arm", file=err)
+                    return 2
                 if args.start or args.arm or args.complete or args.abort:
                     from recto import top_plane_cli as _tp
                     args.slot_list = [args.slot] if args.slot else []

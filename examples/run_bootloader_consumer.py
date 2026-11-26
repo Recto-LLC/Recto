@@ -865,14 +865,18 @@ def _read_text_file(path: str) -> str | None:
 
 
 def _build_push_dispatcher(secret_source):
-    """Construct the silent-push wake dispatcher from RECTO_PUSH_* env,
+    """Construct the push wake dispatcher from RECTO_PUSH_* env,
     or None when no sender is fully configured.
+
+    RECTO_PUSH_VISIBLE=0 sends the silent wake (nothing is shown on the
+    phone); anything else, or unset, sends the one fixed notification.
 
     Push is an ENHANCEMENT (polling stays the permanent fallback per
     the wave-C protocol posture), so every failure here is a stderr
     WARN + sender-skip, never an exit.
     """
     senders = []
+    visible = (os.environ.get("RECTO_PUSH_VISIBLE") or "").strip() != "0"
 
     team_id = _env("RECTO_PUSH_APNS_TEAM_ID")
     key_id = _env("RECTO_PUSH_APNS_KEY_ID")
@@ -901,6 +905,7 @@ def _build_push_dispatcher(secret_source):
                             p8_key_pem=p8_pem,
                             bundle_id=bundle_id,
                             use_sandbox=use_sandbox,
+                            visible=visible,
                         )
                     )
                 )
@@ -937,6 +942,7 @@ def _build_push_dispatcher(secret_source):
                         FcmConfig(
                             project_id=fcm_project,
                             service_account_json=sa_json,
+                            visible=visible,
                         )
                     )
                 )

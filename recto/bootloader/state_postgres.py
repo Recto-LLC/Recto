@@ -1059,6 +1059,20 @@ class PostgresStateStore(StateStoreBase):
             ).fetchone()
         return row is not None
 
+    def clear_phone_push(self, phone_id: str, push_token: str) -> bool:
+        # One UPDATE, and only on the row that still holds this very token: a rotation that landed first is kept.
+        if not push_token:
+            return False
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                self._q(
+                    "UPDATE {schema}.phones SET doc = doc || %s WHERE phone_id = %s AND doc->>'push_token' = %s "
+                    "RETURNING phone_id"
+                ),
+                (Jsonb({"push_token": None, "push_platform": None}), phone_id, push_token),
+            ).fetchone()
+        return row is not None
+
     def note_member_key(self, phone_id: str, consumer: str, subject: str, key_hex: str | None) -> bool:
         with self._pool.connection() as conn:
             with conn.transaction():

@@ -83,7 +83,9 @@ public static class PairDeepLinkEmitter
     /// future real bootloader-pair flows would mint their own 6-digit
     /// codes through this same primitive.
     /// </summary>
-    /// <param name="code">6 numeric digits. Throws on invalid shape.</param>
+    /// <param name="code">6 numeric digits, or an owner reset's 16 characters
+    /// in their canonical form (upper case, no separators). Throws on invalid
+    /// shape; the message never repeats the code.</param>
     /// <param name="bootloaderUrl">Required URL the phone should pair
     /// against. Emitted verbatim (the demo sentinel
     /// <c>demo://recto-app-review</c> is intentionally non-HTTP).</param>
@@ -188,10 +190,17 @@ public static class PairDeepLinkEmitter
                 }
                 break;
             case PairDeepLinkKind.Bootloader:
+                // An owner reset's code, canonical only: byte-for-byte what
+                // the Python emitter (recto/qr/pair.py) accepts.
+                if (code.Length == PairingCodeShape.ResetCodeLength
+                    && PairingCodeShape.NormalizeResetCode(code) == code)
+                {
+                    break;
+                }
                 if (code.Length != 6)
                 {
                     throw new ArgumentException(
-                        $"Bootloader-kind code must be exactly 6 characters (got {code.Length}).",
+                        $"Bootloader-kind code must be 6 digits, or the 16 characters of an owner reset's code (got {code.Length} characters).",
                         nameof(code));
                 }
                 for (int i = 0; i < code.Length; i++)

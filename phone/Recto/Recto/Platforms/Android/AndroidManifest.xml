@@ -25,7 +25,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <!-- Android 13+ (API 33) requires explicit runtime permission for
-         notifications. Earlier API levels grant by default. -->
+         notifications. Earlier API levels grant by default. MainActivity
+         asks for it (AndroidPushWakeNotice.RequestPermission): a push wake
+         is shown as one fixed notification. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Build 6 (2026-06-02): CAMERA permission + camera hardware
          feature retired with the in-app QR scanner. OS Camera handles

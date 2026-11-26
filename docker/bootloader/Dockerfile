@@ -88,7 +88,10 @@ LABEL org.opencontainers.image.title="Recto bootloader" \
 
 # Build-time arguments (default to most-likely values; consumers can
 # override at build time if their deploy needs a tighter image).
-ARG RECTO_EXTRAS="v0_4,ethereum,bitcoin,ed25519,tron"
+# `push` is the HTTP/2 client the push wake's senders need (httpx); without
+# it a configured sender fails at start with a WARN and push is off. It
+# sends nothing unless the RECTO_PUSH_* settings name a credential.
+ARG RECTO_EXTRAS="v0_4,ethereum,bitcoin,ed25519,tron,push,qr"
 
 # System deps: curl for the healthcheck primitive (cheaper than baking
 # Python startup just to probe an HTTP endpoint), ca-certificates for
@@ -137,7 +140,8 @@ COPY examples/ ./examples/
 RUN pip install --no-cache-dir --upgrade pip --root-user-action=ignore
 
 # Install Recto + the credential-kind extras the bootloader needs.
-# `cryptography` (pulled via v0_4) is the only meaningful native dep;
+# `cryptography` (pulled via v0_4) and Pillow (pulled via qr) are the
+# native deps;
 # everything else in the extras is pure-Python stdlib or empty-list-
 # gated. Wheel cache cleared post-install to keep the layer small.
 RUN pip install --no-cache-dir -e ".[${RECTO_EXTRAS}]"

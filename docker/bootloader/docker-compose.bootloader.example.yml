@@ -32,6 +32,9 @@
 #      the operator's phone after pairing.
 #   8. Bootloader ID — set RECTO_BOOTLOADER_ID to something
 #      distinguishing across your fleet (e.g. recto-<consumer>-staging).
+#   9. Push wake (optional) — the RECTO_PUSH_* lines and the two key
+#      files, only if you publish your own build of the phone app.
+#      Leave them empty and push is off: phones find cards by polling.
 
 services:
   bootloader:
@@ -40,6 +43,12 @@ services:
       # ../Recto. Adjust if your operator-side layout differs.
       context: ../Recto
       dockerfile: docker/bootloader/Dockerfile
+      # The image's extras. The default already carries `push` and `qr`
+      # (`qr` draws an owner reset's code as a QR when `recto bootloader
+      # owner-reset --arm` runs in the container); name the list here only
+      # to change it.
+      # args:
+      #   RECTO_EXTRAS: "v0_4,ethereum,bitcoin,ed25519,tron,push,qr"
     container_name: bootloader   # [CUSTOMIZE 5]
     environment:
       # Substrate-level identity + binding. State-dir + manifest paths
@@ -65,6 +74,29 @@ services:
       - RECTO_UNPAIR_IDENTITY_MODE=${RECTO_UNPAIR_IDENTITY_MODE:-record}
       - RECTO_ATTESTATION_ANDROID_APPS=${RECTO_ATTESTATION_ANDROID_APPS:-}
       - RECTO_ATTESTATION_IOS_APP_IDS=${RECTO_ATTESTATION_IOS_APP_IDS:-}
+
+      # [CUSTOMIZE 9] PUSH WAKE (optional). When a card is queued the
+      # bootloader asks Apple or Google to wake that phone, which shows one
+      # fixed notification ("Something is waiting for your approval in
+      # Recto.") and nothing about the card. All empty = push off, nothing
+      # fails, and the start banner says so. A push service only delivers to
+      # an app published under the same developer account as the key, so
+      # these are for the publisher of the phone build you pair.
+      #   APNs needs the three ids AND the key file; FCM needs the project
+      #   id AND the service-account file. The two files are SECRETS: mount
+      #   them read-only (see volumes:) and never put their content here.
+      - RECTO_PUSH_APNS_TEAM_ID=${RECTO_PUSH_APNS_TEAM_ID:-}
+      - RECTO_PUSH_APNS_KEY_ID=${RECTO_PUSH_APNS_KEY_ID:-}
+      - RECTO_PUSH_APNS_BUNDLE_ID=${RECTO_PUSH_APNS_BUNDLE_ID:-}
+      - RECTO_PUSH_APNS_P8_FILE=${RECTO_PUSH_APNS_P8_FILE:-}
+      # 1 = Apple's sandbox gateway (a development-signed build); anything
+      # else = production. One bootloader serves one of the two.
+      - RECTO_PUSH_APNS_SANDBOX=${RECTO_PUSH_APNS_SANDBOX:-}
+      - RECTO_PUSH_FCM_PROJECT_ID=${RECTO_PUSH_FCM_PROJECT_ID:-}
+      - RECTO_PUSH_FCM_SA_FILE=${RECTO_PUSH_FCM_SA_FILE:-}
+      # 0 = the silent wake of earlier releases: nothing is shown, and a
+      # closed app is not woken. Anything else = the fixed notification.
+      - RECTO_PUSH_VISIBLE=${RECTO_PUSH_VISIBLE:-1}
 
       # [CUSTOMIZE 4] Per-agent token interpolation. Each agent
       # declared in agents.json with `token_env: "VARNAME"` needs a
@@ -115,6 +147,12 @@ services:
       # manifest and set RECTO_CAPABILITY_MANIFEST_FILE to this path to serve
       # GET /v0.4/capability/manifest (unset = endpoint 404s, pre-manifest posture).
       # - ./recto-manifests/capability-manifest.json:/etc/recto/capability-manifest.json:ro
+      # [CUSTOMIZE 9] The push wake's two key files (read-only), when push
+      # is on. Set RECTO_PUSH_APNS_P8_FILE=/etc/recto/push/apns-key.p8 and
+      # RECTO_PUSH_FCM_SA_FILE=/etc/recto/push/fcm-service-account.json.
+      # Keep both outside the repository and readable by this service only.
+      # - ./recto-secrets/apns-key.p8:/etc/recto/push/apns-key.p8:ro
+      # - ./recto-secrets/fcm-service-account.json:/etc/recto/push/fcm-service-account.json:ro
 
       # Folder-drop event bus (opt-in; comment out to disable). Bind-
       # mount to a HOST path so peer-AIs on the host filesystem can
