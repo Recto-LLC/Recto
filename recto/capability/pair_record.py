@@ -18,12 +18,46 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from recto.capability.types import CapabilityClaims
+from recto.capability.types import CapabilityClaims, CapabilityScope
 
 PAIR_ACTION = "devices:pair"
 UNPAIR_ACTION = "devices:unpair"
 # The bootloader's own attestation that it verified a pairing act.
 PAIR_RESULT_ACTION = "devices:pair_result"
+
+
+@dataclass(frozen=True)
+class PairResultScope(CapabilityScope):
+    """The scope of the bootloader's own pair result, and of nothing a phone signs: ``device_class`` is what its
+    registry holds for the phone bound to the paired (consumer, subject) - ``attested``, ``test``, ``unverified``, or
+    ``none`` when no phone is bound (hard rule 14.8). A request or a card never carries it."""
+
+    device_class: str | None = None
+
+
+# The bootloader's own attestation that the phone that asked for an unpairing signed it with its identity key.
+UNPAIR_RESULT_ACTION = "devices:unpair_result"
+UNPAIR_PREFIX = "recto-unpair-v1"
+PAIR_PREFIX = "recto-pair-v1"
+
+
+@dataclass(frozen=True)
+class UnpairResultScope(CapabilityScope):
+    """The scope of an unpair result, and of nothing a phone signs: the slot of the phone that signed."""
+
+    approved_slot: str | None = None
+
+
+def pair_payload(bootloader_id: str, phone_id: str, digest_b64u: str) -> bytes:
+    """What the identity key signs over a pairing: the grant that names the code, the subject and the key."""
+    return f"{PAIR_PREFIX}|{bootloader_id}|{phone_id}|{digest_b64u}".encode("ascii")
+
+
+def unpair_payload(bootloader_id: str, phone_id: str, digest_b64u: str) -> bytes:
+    """What the identity key signs over an unpairing: the grant the phone's other key signed, by its digest."""
+    return f"{UNPAIR_PREFIX}|{bootloader_id}|{phone_id}|{digest_b64u}".encode("ascii")
+
+
 # The bootloader's proof of possession of its own signing key, over a phone
 # nonce (GET /v0.4/attest). What the phone trusts INSTEAD of a TLS leaf pin.
 ATTEST_ACTION = "bootloader:attest"

@@ -86,7 +86,10 @@ public sealed record RespondRequest(
     // field to CapSignatureB64u above — both populated together when
     // approving a profile_create request. See recto/profile/SPEC.md
     // Phase 2.0.C wave C.1 for the wire-shape rationale.
-    [property: JsonPropertyName("child_pubkey_hex")] string? ChildPubkeyHex = null);
+    [property: JsonPropertyName("child_pubkey_hex")] string? ChildPubkeyHex = null,
+    // Hard rule 14.8: the kept App Attest key's assertion over this answer. BootloaderClient fills it.
+    [property: JsonPropertyName("device_assertion"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? DeviceAssertion = null);
 
 public static class RespondDecision
 {

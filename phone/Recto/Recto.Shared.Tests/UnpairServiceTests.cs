@@ -112,6 +112,36 @@ public class UnpairServiceTests
         return (new UnpairService(pairing, totp, keys, genesis, phrases ?? new FakePhrases()), genesis, pairing, totp, keys);
     }
 
+    // ── the identity key alone ───────────────────────────────────────────
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(null)]
+    public async Task AGenesisMembersKey_OrOneThatCannotSay_IsNotRemoved(bool? member)
+    {
+        var (sut, _, pairing, totp, keys) = Build(member);
+
+        var result = await sut.RemoveIdentityKeyAsync(Alias, CancellationToken.None);
+
+        Assert.Equal(UnpairAllStatus.RefusedGenesisMember, result.Status);
+        Assert.Empty(keys.Deleted);
+        Assert.Empty(pairing.Calls);
+        Assert.Equal(0, totp.ClearAllCalls);
+    }
+
+    [Fact]
+    public async Task TheKeyAloneGoes_AndEverythingElseStays()
+    {
+        var (sut, _, pairing, totp, keys) = Build(member: false, new FakePhrases { Phrase = "made up words" });
+
+        var result = await sut.RemoveIdentityKeyAsync(Alias, CancellationToken.None);
+
+        Assert.Equal(UnpairAllStatus.Completed, result.Status);
+        Assert.Equal(new[] { Alias, PollSigning.PollKeyAlias }, keys.Deleted);
+        Assert.Empty(pairing.Calls);
+        Assert.Equal(0, totp.ClearAllCalls);
+    }
+
     // ── the recovery phrase ──────────────────────────────────────────────
 
     [Theory]

@@ -44,6 +44,8 @@ from recto.bootloader.state import (
     StateStore,
 )
 
+REAL_GRANT_APPROVAL = True
+
 PG_DSN = os.environ.get("RECTO_TEST_POSTGRES_DSN")
 
 
@@ -195,6 +197,19 @@ def test_revoke_phone_cascades_sessions_and_pending(store):
     assert store.list_pending_for_phone(p.phone_id) == []
     # Second revoke: already gone.
     assert store.revoke_phone(p.phone_id) is False
+
+
+# ----------------------------------------------------------------------
+# Approved grants
+# ----------------------------------------------------------------------
+
+def test_an_approved_grant_is_known_until_its_exp(store):
+    now = int(time.time())
+    store.note_approved_grant("d1", now + 60)
+    store.note_approved_grant("d1", now + 60)
+    store.note_approved_grant("d2", now - 1)
+    assert store.grant_was_approved("d1")
+    assert not store.grant_was_approved("d2") and not store.grant_was_approved("d3")
 
 
 # ----------------------------------------------------------------------

@@ -6,7 +6,7 @@ permalink: /privacy/
 
 # Privacy Policy — Recto Agentic
 
-**Last updated: 2026-10-31**
+**Last updated: 2026-11-25**
 
 Recto Agentic is a public open-source application (Apache 2.0) that
 serves as an operator-phone-as-root-of-trust authenticator. This
@@ -44,6 +44,8 @@ When you approve a signing request, Recto Agentic transmits the following to the
 
 - A cryptographic signature over the request payload, made with your keys.
 - The pairing identifier (so the bootloader knows which paired device sent the response).
+
+When you pair, your device also sends the bootloader a proof that its key is protected: on Android the key's certificates, on iOS an App Attest object obtained from Apple. The proof holds no device serial number, IMEI, phone number or advertising identifier. The bootloader software checks it once and drops it, and keeps only the result, the platform and the date; on iOS it also keeps the public half of a key your app made for that bootloader, which your approvals are then checked against. If you pair a service as its member, the bootloader also keeps, for that service, the public key your approvals there are checked against, until you unpair the service from your phone, your pairing moves to another phone or the phone is removed.
 
 Recto Agentic transmits nothing else. **No analytics. No usage statistics. No location. No device-fingerprinting beacons.**
 

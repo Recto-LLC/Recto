@@ -117,6 +117,33 @@ Signed polls (hard rule 14.2 -- the phone's reads are signed by its key):
                             every live phone signing. Any other value
                             refuses startup (exit 2) -- never coerced.
 
+What a new phone proves (hard rule 14.8 -- read once, at startup):
+    RECTO_DEVICE_EVIDENCE_MODE  "require" (default when unset) | "record".
+                            require: a key this registry does not hold
+                            enters only with its vendor's evidence that it
+                            is in hardware, or on a test-device code.
+                            record: evidence is verified and its class is
+                            stored; nothing is refused. A phone already
+                            registered is never asked, in either.
+    RECTO_APPROVAL_EVIDENCE_MODE  "record" (default when unset) | "require".
+                            What an iPhone whose App Attest key is kept adds
+                            to each act it signs. A wrong assertion is
+                            refused in both. record: a missing one is
+                            accepted and noted. require: refused. A phone
+                            with no kept key is asked nothing, in either.
+    RECTO_UNPAIR_IDENTITY_MODE  "record" (default when unset) | "require" |
+                            "off". Whether an unpairing relayed here must
+                            also be signed by the phone's identity key.
+    RECTO_ATTESTATION_ANDROID_APPS  "<package>=<sha256 of the signing
+                            certificate>", comma-separated. Empty: the
+                            calling app is not checked.
+    RECTO_ATTESTATION_IOS_APP_IDS  "<team id>.<bundle id>", comma-separated.
+                            Empty: no iOS evidence verifies.
+    RECTO_ATTESTATION_STATUS_FILE  A copy of Google's attestation status
+                            list (JSON). Unset: revocations are not checked.
+                            Any value that does not read refuses startup
+                            (exit 2).
+
 The card queue's caps:
     RECTO_MAX_OPEN_CARDS_PER_AGENT  Default 12. The open cards one agent may
                             hold on one phone for one signed subject.
@@ -345,6 +372,7 @@ import pathlib
 import sys
 from typing import Mapping
 
+from recto.bootloader.device_evidence import DevicePolicy
 from recto.bootloader.events import construct_from_env as construct_events_emitter
 from recto.bootloader.server import (
     MAX_OPEN_CARDS_PER_AGENT,
@@ -1360,6 +1388,7 @@ def main() -> int:
     # mints MEMBER pairing codes for; an agent with no list mints none (the bootloader refuses
     # member_consumer_not_allowed). Present = a non-empty array of non-blank strings, like the request policies.
     member_code_consumers: dict[str, list[str]] = {}
+    member_grants: dict[str, dict[str, list[str]]] = {}
     principal_apps: dict[str, AppContext] = {}
     # THE OWNER SLOTS (hard rule 14.4, amended): only an agent whose entry carries "may_mint_owner_codes": true mints
     # OWNER pairing codes; every other agent mints member codes only. A strict JSON boolean - anything else refuses.
@@ -1433,6 +1462,11 @@ def main() -> int:
             member_consumers = _parse_agent_policy_list(
                 entry, agent, "member_consumers", "consumer base-URL",
             )
+            # What this agent may ask a MEMBER to approve (hard rule 14.12): both lists, or neither.
+            member_actions = _parse_agent_policy_list(entry, agent, "member_actions", "action-key")
+            member_audiences = _parse_agent_policy_list(entry, agent, "member_audiences", "audience")
+            if (member_actions is None) != (member_audiences is None):
+                raise ValueError(f"{entry}: member_actions and member_audiences go together")
         except ValueError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
@@ -1455,6 +1489,8 @@ def main() -> int:
             capability_agent_audiences[agent_id] = audiences
         if member_consumers is not None:
             member_code_consumers[agent_id] = [c.rstrip("/") for c in member_consumers]
+        if member_actions is not None:
+            member_grants[agent_id] = {"actions": member_actions, "audiences": member_audiences}
 
     # Phase H end-user device pairing relay (2026-05-19). When the
     # operator registers one or more consumers via
@@ -1652,6 +1688,7 @@ def main() -> int:
     # 14.2). Refused at startup on any illegal spelling; see _resolve_signed_poll_mode.
     try:
         signed_poll_mode = _resolve_signed_poll_mode()
+        device_policy = DevicePolicy.from_env(os.environ)
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(2)
@@ -1664,6 +1701,7 @@ def main() -> int:
             challenges=challenges,
             bootloader_id=bootloader_id,
             signed_poll_mode=signed_poll_mode,
+            device_policy=device_policy,
             max_open_cards_per_agent=_env_int("RECTO_MAX_OPEN_CARDS_PER_AGENT", default=MAX_OPEN_CARDS_PER_AGENT),
             max_open_cards_per_phone=_env_int("RECTO_MAX_OPEN_CARDS_PER_PHONE", default=MAX_OPEN_CARDS_PER_PHONE),
             capability_manifest_path=capability_manifest_path,
@@ -1673,6 +1711,7 @@ def main() -> int:
             capability_agent_auth_only=capability_agent_auth_only or None,
             owner_code_minters=owner_code_minters,
             member_code_consumers=member_code_consumers or None,
+            member_grants=member_grants or None,
             capability_operator_token=operator_write_token,
             principal_apps=principal_apps,
             devices_pair_consumer_webhook_tokens=devices_pair_consumer_webhook_tokens,
@@ -1719,6 +1758,8 @@ def main() -> int:
     print(f"State backend: {state_banner}")
     print(f"Bootloader id: {bootloader_id}")
     print(f"Signed polls:  {signed_poll_mode}")
+    for line in device_policy.describe():
+        print(line)
     if push_dispatcher is not None:
         print(f"Push wake:     {'+'.join(push_dispatcher.platforms)}")
     else:

@@ -48,6 +48,13 @@ public interface IUnpairService
     /// the person passes <paramref name="eraseRecoveryPhrase"/>.
     /// </summary>
     Task<UnpairAllResult> UnpairAllAsync(string keyAlias, CancellationToken ct, bool eraseRecoveryPhrase = false);
+
+    /// <summary>
+    /// Removes the identity key under <paramref name="keyAlias"/> and the poll key it delegated, so the next pairing
+    /// makes new ones; the pairing record, the TOTP secrets and the recovery phrase stay. The genesis guard stands
+    /// ahead of it as it does of the wipe.
+    /// </summary>
+    Task<UnpairAllResult> RemoveIdentityKeyAsync(string keyAlias, CancellationToken ct);
 }
 
 public sealed class UnpairService : IUnpairService
@@ -96,22 +103,7 @@ public sealed class UnpairService : IUnpairService
     public async Task<UnpairAllResult> UnpairAllAsync(
         string keyAlias, CancellationToken ct, bool eraseRecoveryPhrase = false)
     {
-        // THE GUARD — ahead of the first destructive call, fail-closed:
-        // an unreadable marker is treated as membership, because the cost
-        // of a wrong "no" is a retry and the cost of a wrong "yes" is a
-        // destroyed trust-root member.
-        var membership = await _genesis.IsGenesisMemberAsync(ct).ConfigureAwait(false);
-        if (!membership.IsSuccess)
-        {
-            return new UnpairAllResult(
-                UnpairAllStatus.RefusedGenesisMember,
-                FailClosedPrefix + GenesisRefusalMessage);
-        }
-
-        if (membership.Value)
-        {
-            return new UnpairAllResult(UnpairAllStatus.RefusedGenesisMember, GenesisRefusalMessage);
-        }
+        if (await RefuseGenesisMemberAsync(ct).ConfigureAwait(false) is { } refusal) return refusal;
 
         if (!eraseRecoveryPhrase && await HoldsPhraseAsync().ConfigureAwait(false))
         {
@@ -138,6 +130,41 @@ public sealed class UnpairService : IUnpairService
         {
             return new UnpairAllResult(UnpairAllStatus.Failed, $"{ex.GetType().Name}: {ex.Message}");
         }
+    }
+
+    public async Task<UnpairAllResult> RemoveIdentityKeyAsync(string keyAlias, CancellationToken ct)
+    {
+        if (await RefuseGenesisMemberAsync(ct).ConfigureAwait(false) is { } refusal) return refusal;
+        try
+        {
+            var deleted = await _enclaveKeys.DeleteAsync(keyAlias, ct).ConfigureAwait(false);
+            if (deleted.IsFailure) return new UnpairAllResult(UnpairAllStatus.Failed, deleted.Error.Message);
+            await _enclaveKeys.DeleteAsync(PollSigning.PollKeyAlias, ct).ConfigureAwait(false);
+            return new UnpairAllResult(UnpairAllStatus.Completed);
+        }
+        catch (Exception ex)
+        {
+            return new UnpairAllResult(UnpairAllStatus.Failed, $"{ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    // THE GUARD — ahead of the first destructive call, fail-closed:
+    // an unreadable marker is treated as membership, because the cost
+    // of a wrong "no" is a retry and the cost of a wrong "yes" is a
+    // destroyed trust-root member.
+    private async Task<UnpairAllResult?> RefuseGenesisMemberAsync(CancellationToken ct)
+    {
+        var membership = await _genesis.IsGenesisMemberAsync(ct).ConfigureAwait(false);
+        if (!membership.IsSuccess)
+        {
+            return new UnpairAllResult(
+                UnpairAllStatus.RefusedGenesisMember,
+                FailClosedPrefix + GenesisRefusalMessage);
+        }
+
+        return membership.Value
+            ? new UnpairAllResult(UnpairAllStatus.RefusedGenesisMember, GenesisRefusalMessage)
+            : null;
     }
 
     // Only whether there is one. A store that cannot be read is presumed to hold it, and so is one that reads empty

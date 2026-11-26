@@ -47,6 +47,35 @@ public interface IEnclaveKeyService
     Task<Result<EnclavePublicKey>> GenerateDeviceKeyAsync(string keyAlias, CancellationToken ct)
         => GenerateAsync(keyAlias, ct);
 
+    /// <summary>
+    /// True when the platform attests a key at its creation (Android), so a key carries the challenge of the
+    /// registration it was made for and no later one.
+    /// </summary>
+    bool AttestsAtCreation => false;
+
+    /// <summary>
+    /// <see cref="GenerateAsync"/>, asking the platform to attest the new key over
+    /// <paramref name="attestationChallenge"/> where it can. A device that cannot attest still makes the key.
+    /// </summary>
+    Task<Result<EnclavePublicKey>> GenerateAttestedAsync(
+        string keyAlias, byte[] attestationChallenge, CancellationToken ct)
+        => GenerateAsync(keyAlias, ct);
+
+    /// <summary>
+    /// What this device can show for <paramref name="keyAlias"/> in this registration, or null when it can show
+    /// nothing. Never prompts.
+    /// </summary>
+    Task<Result<DeviceEvidence?>> GetDeviceEvidenceAsync(
+        string keyAlias, string registrationChallenge, string identityKeyB64u, string pollKeyB64u, CancellationToken ct)
+        => Task.FromResult(Result.Success<DeviceEvidence?>(null));
+
+    /// <summary>
+    /// An App Attest assertion by the key <paramref name="appAttestKeyId"/> (base64), or null where there is no App
+    /// Attest. Never prompts. A key the platform no longer holds fails with <see cref="DeviceEvidence.KeyGoneCode"/>.
+    /// </summary>
+    Task<Result<string?>> GetDeviceAssertionAsync(string appAttestKeyId, byte[] clientDataHash, CancellationToken ct)
+        => Task.FromResult(Result.Success<string?>(null));
+
     /// <summary>True if a keypair already exists under <paramref name="keyAlias"/>.</summary>
     Task<Result<bool>> KeyExistsAsync(string keyAlias, CancellationToken ct);
 

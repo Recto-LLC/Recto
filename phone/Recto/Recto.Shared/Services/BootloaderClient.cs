@@ -43,6 +43,7 @@ public sealed class BootloaderClient : IBootloaderClient
     private readonly HttpClient _http;
     private readonly ILogger<BootloaderClient> _log;
     private readonly IReadSigner? _readSigner;
+    private readonly ActAsserter? _acts;
 
     /// <summary>
     /// ONE constructor, deliberately. The typed-client factory
@@ -56,8 +57,10 @@ public sealed class BootloaderClient : IBootloaderClient
     /// and its two denials (a respond with decision "denied", a grant-request
     /// deny), never an approval; the optional default lets tests construct without DI.
     /// </summary>
-    public BootloaderClient(HttpClient http, ILogger<BootloaderClient> log, IReadSigner? readSigner = null)
+    public BootloaderClient(
+        HttpClient http, ILogger<BootloaderClient> log, IReadSigner? readSigner = null, ActAsserter? acts = null)
     {
+        _acts = acts;
         _http = http;
         _log = log;
         _readSigner = readSigner;
@@ -158,6 +161,7 @@ public sealed class BootloaderClient : IBootloaderClient
                     raw = reqs.GetRawText();
                 }
             }
+            _acts?.SawQueue(parsed.Requests);
             return Result.Success(parsed with { RequestsRawJson = raw });
         }
         catch (JsonException ex)
@@ -189,10 +193,22 @@ public sealed class BootloaderClient : IBootloaderClient
         // A denial carries no identity-key signature in its body, so the delegated poll key signs its
         // path (hard rule 14.2: the poll key authenticates the device). An approval is signed by the
         // identity key in its body and carries no poll signature: the poll key never signs an approval.
-        return string.Equals(request.Decision, "denied", StringComparison.Ordinal)
-            ? SendSignedReadAsync<RespondResponse>(HttpMethod.Post, url, request, request.PhoneId, path, ct)
-            : SendAsync<RespondResponse>(HttpMethod.Post, url, request, ct);
+        return ActAsync(_acts?.ForCard(requestId, request.Decision), a =>
+            string.Equals(request.Decision, "denied", StringComparison.Ordinal)
+                ? SendSignedReadAsync<RespondResponse>(HttpMethod.Post, url, request with { DeviceAssertion = a }, request.PhoneId, path, ct)
+                : SendAsync<RespondResponse>(HttpMethod.Post, url, request with { DeviceAssertion = a }, ct));
     }
+
+    /// <summary>One act, with the kept App Attest key's assertion when this phone can make one (hard rule 14.8).</summary>
+    private Task<Result<T>> ActAsync<T>(byte[]? clientDataHash, Func<string?, Task<Result<T>>> send)
+        => _acts is not { } acts || clientDataHash is null
+            ? send(null)
+            : acts.SendAsync(clientDataHash, async assertion =>
+            {
+                var result = await send(assertion).ConfigureAwait(false);
+                await acts.HeardAsync(assertion, result.IsFailure ? result.Error : null).ConfigureAwait(false);
+                return result;
+            });
 
     public Task<Result<RegisteredPhonesResponse>> ListRegisteredPhonesAsync(
         string bootloaderUrl, string phoneId, CancellationToken ct)
@@ -253,7 +269,10 @@ public sealed class BootloaderClient : IBootloaderClient
         // swallowed into a polling-error field and overwritten by the next
         // poll, so the dead lane looked like a no-op instead of a defect.
         var url = $"{bootloaderUrl.TrimEnd('/')}/v0.4/manage/phones/revoke";
-        return SendAsync<RevokeResponse>(HttpMethod.Post, url, request, ct);
+        return ActAsync(
+            ActAsserter.ClientDataHash("revoke", request.ChallengeB64u,
+                Encoding.ASCII.GetBytes($"{request.ChallengeB64u}:{request.TargetPhoneId}"), request.ChallengeB64u),
+            a => SendAsync<RevokeResponse>(HttpMethod.Post, url, request with { DeviceAssertion = a }, ct));
     }
 
     public Task<Result<PushTokenUpdateResponse>> UpdatePushTokenAsync(
@@ -266,7 +285,19 @@ public sealed class BootloaderClient : IBootloaderClient
         }
 
         var url = $"{bootloaderUrl.TrimEnd('/')}/v0.4/manage/push_token";
-        return SendSignedReadAsync<PushTokenUpdateResponse>(HttpMethod.Post, url, request, request.PhoneId, "/v0.4/manage/push_token", ct);
+        return UpdatePushTokenSignedAsync(url, request, ct);
+    }
+
+    private async Task<Result<PushTokenUpdateResponse>> UpdatePushTokenSignedAsync(
+        string url, PushTokenUpdateRequest request, CancellationToken ct)
+    {
+        // The assertion names the read signature's own moment, so that signature is made first.
+        var sig = await SignReadAsync(request.PhoneId, "/v0.4/manage/push_token", ct).ConfigureAwait(false);
+        return await ActAsync(
+            sig is null ? null : ActAsserter.ClientDataHash("push-token", request.PhoneId,
+                Encoding.UTF8.GetBytes($"{request.PushToken}|{request.PushPlatform}"), sig.TsUnix.ToString()),
+            a => SendAsync<PushTokenUpdateResponse>(HttpMethod.Post, url, request with { DeviceAssertion = a }, ct, sig))
+            .ConfigureAwait(false);
     }
 
     public Task<Result<DevicesPairResponse>> PairDeviceAsync(
@@ -304,20 +335,23 @@ public sealed class BootloaderClient : IBootloaderClient
         }
 
         var url = $"{bootloaderUrl.TrimEnd('/')}/v0.4/devices/pair";
-        return SendAsync<DevicesPairResponse>(HttpMethod.Post, url, request, ct);
+        return ActAsync(
+            ActAsserter.ClientDataHash("pair", request.Record.Code, Encoding.UTF8.GetBytes(request.UserJws),
+                request.Record.NotAfter.ToString()),
+            a => SendAsync<DevicesPairResponse>(HttpMethod.Post, url, request with { DeviceAssertion = a }, ct));
     }
 
     public Task<Result<UserVaultGrantAdmitted>> PostUserVaultGrantAsync(
         string bootloaderUrl, UserVaultSignedRecord request, CancellationToken ct)
-        => PostUserVaultAsync<UserVaultGrantAdmitted>(bootloaderUrl, "grant", request, ct);
+        => VaultActAsync<UserVaultGrantAdmitted>(bootloaderUrl, "grant", "vault-grant", request, ct);
 
     public Task<Result<UserVaultRevokeResponse>> PostUserVaultRevokeAsync(
         string bootloaderUrl, UserVaultSignedRecord request, CancellationToken ct)
-        => PostUserVaultAsync<UserVaultRevokeResponse>(bootloaderUrl, "revoke", request, ct);
+        => VaultActAsync<UserVaultRevokeResponse>(bootloaderUrl, "revoke", "vault-revoke", request, ct);
 
     public Task<Result<UserVaultRevokeKeyResponse>> PostUserVaultRevokeKeyAsync(
         string bootloaderUrl, UserVaultSignedRecord request, CancellationToken ct)
-        => PostUserVaultAsync<UserVaultRevokeKeyResponse>(bootloaderUrl, "revoke-key", request, ct);
+        => VaultActAsync<UserVaultRevokeKeyResponse>(bootloaderUrl, "revoke-key", "vault-revoke-key", request, ct);
 
     public Task<Result<UserVaultGrantsListResponse>> ListUserVaultGrantsAsync(
         string bootloaderUrl, UserVaultGrantsListRequest request, CancellationToken ct)
@@ -343,8 +377,30 @@ public sealed class BootloaderClient : IBootloaderClient
         }
         // The delegated poll key signs the deny's path, as it does a denial of an approval card.
         const string path = "/v0.4/user-vault/grant-request/deny";
-        return SendSignedReadAsync<UserVaultDenyResponse>(
-            HttpMethod.Post, $"{bootloaderUrl.TrimEnd('/')}{path}", new { request_id = requestId }, phoneId, path, ct);
+        return DenyVaultSignedAsync($"{bootloaderUrl.TrimEnd('/')}{path}", path, phoneId, requestId, ct);
+    }
+
+    private async Task<Result<UserVaultDenyResponse>> DenyVaultSignedAsync(
+        string url, string path, string phoneId, string requestId, CancellationToken ct)
+    {
+        var sig = await SignReadAsync(phoneId, path, ct).ConfigureAwait(false);
+        return await ActAsync(
+            sig is null ? null : ActAsserter.ClientDataHash("vault-deny", requestId, Array.Empty<byte>(), sig.TsUnix.ToString()),
+            a => SendAsync<UserVaultDenyResponse>(HttpMethod.Post, url,
+                a is null ? new { request_id = requestId } : new { request_id = requestId, device_assertion = a }, ct, sig))
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>A vault record's signature is over the record; the assertion is over that signature, and names the phone
+    /// the bootloader knows this one by.</summary>
+    private async Task<Result<T>> VaultActAsync<T>(
+        string bootloaderUrl, string verb, string act, UserVaultSignedRecord request, CancellationToken ct)
+        where T : class
+    {
+        var phoneId = _acts is null ? null : await _acts.PhoneIdAsync().ConfigureAwait(false);
+        return await ActAsync(
+            phoneId is null ? null : ActAsserter.ClientDataHash(act, phoneId, Encoding.UTF8.GetBytes(request.SignatureB64u), string.Empty),
+            a => PostUserVaultAsync<T>(bootloaderUrl, verb, request with { DeviceAssertion = a }, ct)).ConfigureAwait(false);
     }
 
     private Task<Result<T>> PostUserVaultAsync<T>(string bootloaderUrl, string verb, object request, CancellationToken ct)

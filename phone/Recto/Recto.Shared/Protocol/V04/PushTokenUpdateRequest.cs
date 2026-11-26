@@ -12,7 +12,9 @@ namespace Recto.Shared.Protocol.V04;
 public sealed record PushTokenUpdateRequest(
     [property: JsonPropertyName("phone_id")] string PhoneId,
     [property: JsonPropertyName("push_token")] string PushToken,
-    [property: JsonPropertyName("push_platform")] string PushPlatform);
+    [property: JsonPropertyName("push_platform")] string PushPlatform,
+    [property: JsonPropertyName("device_assertion"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? DeviceAssertion = null);
 
 public sealed record PushTokenUpdateResponse(
     [property: JsonPropertyName("updated")] bool Updated,

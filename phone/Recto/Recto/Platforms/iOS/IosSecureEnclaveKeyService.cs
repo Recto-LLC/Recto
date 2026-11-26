@@ -59,6 +59,62 @@ public sealed class IosSecureEnclaveKeyService : IEnclaveKeyService
     public Task<Result<EnclavePublicKey>> GenerateDeviceKeyAsync(string keyAlias, CancellationToken ct)
         => Generate(keyAlias, biometricGated: false);
 
+    /// <summary>
+    /// App Attest over this registration (hard rule 14.8): a fresh App Attest key, attested over the challenge and the
+    /// two keys being registered. It vouches for this app on this device, and through the app for the identity key,
+    /// which this class makes in the Secure Enclave and nowhere else. The App Attest key is used for this one act.
+    /// Null where App Attest is not supported. Asks Apple over the network, and never prompts.
+    /// </summary>
+    public async Task<Result<DeviceEvidence?>> GetDeviceEvidenceAsync(
+        string keyAlias, string registrationChallenge, string identityKeyB64u, string pollKeyB64u, CancellationToken ct)
+    {
+        try
+        {
+            var service = DeviceCheck.DCAppAttestService.SharedService;
+            if (!service.Supported)
+            {
+                return Result.Success<DeviceEvidence?>(null);
+            }
+            using var clientDataHash = NSData.FromArray(
+                DeviceEvidence.IosClientDataHash(registrationChallenge, identityKeyB64u, pollKeyB64u));
+            var keyId = await service.GenerateKeyAsync().WaitAsync(ct).ConfigureAwait(false);
+            using var attestation = await service.AttestKeyAsync(keyId, clientDataHash).WaitAsync(ct).ConfigureAwait(false);
+            return Result.Success<DeviceEvidence?>(
+                DeviceEvidence.Ios(keyId, Convert.ToBase64String(attestation.ToArray())));
+        }
+        catch (Exception ex)
+        {
+            return Result.Failure<DeviceEvidence?>(Error.Failure($"App Attest failed: {ex.GetType().Name}"));
+        }
+    }
+
+    /// <summary>
+    /// An assertion by the App Attest key this app was attested with (hard rule 14.8). No prompt. The caller bounds it.
+    /// </summary>
+    public async Task<Result<string?>> GetDeviceAssertionAsync(
+        string appAttestKeyId, byte[] clientDataHash, CancellationToken ct)
+    {
+        try
+        {
+            var service = DeviceCheck.DCAppAttestService.SharedService;
+            if (!service.Supported)
+            {
+                return Result.Success<string?>(null);
+            }
+            using var hash = NSData.FromArray(clientDataHash);
+            using var assertion = await service.GenerateAssertionAsync(appAttestKeyId, hash).WaitAsync(ct).ConfigureAwait(false);
+            return Result.Success<string?>(Convert.ToBase64String(assertion.ToArray()));
+        }
+        catch (NSErrorException ex) when (ex.Error.Code == (nint)(long)DeviceCheck.DCError.InvalidKey)
+        {
+            return Result.Failure<string?>(new Error(DeviceEvidence.KeyGoneCode, "The App Attest key is gone.", string.Empty));
+        }
+        catch (Exception ex)
+        {
+            return Result.Failure<string?>(Error.Failure($"App Attest assertion failed: {ex.GetType().Name}"));
+        }
+    }
+
     private Task<Result<EnclavePublicKey>> Generate(string keyAlias, bool biometricGated)
     {
         try

@@ -122,6 +122,17 @@ public sealed record CapabilityAuditView(
     public static CapabilityAuditView From(CapabilityClaims claims)
         => From(claims, DateTimeOffset.UtcNow);
 
+    /// <summary>How long ago the grant was requested and how long it has left, at <paramref name="now"/>.</summary>
+    public static (string RequestedAgo, string TimeLeft) ValidityAt(long iat, long exp, DateTimeOffset now)
+    {
+        var agoSeconds = now.ToUnixTimeSeconds() - iat;
+        var leftSeconds = exp - now.ToUnixTimeSeconds();
+        return (agoSeconds < -ClockSkewSeconds
+                ? "dated " + FormatSpan(-agoSeconds) + " ahead"
+                : FormatSpan(Math.Max(0, agoSeconds)) + " ago",
+            leftSeconds <= 0 ? "expired" : FormatSpan(leftSeconds) + " left");
+    }
+
     /// <summary>
     /// <paramref name="now"/> is injectable so validity strings and
     /// the freshness math are deterministic under test.
@@ -132,12 +143,7 @@ public sealed record CapabilityAuditView(
         long? ceiling = TierWeightCeilings.ForTier(claims.Cap.Tier);
 
         var nowUnix = now.ToUnixTimeSeconds();
-        var agoSeconds = nowUnix - claims.Iat;
-        var leftSeconds = claims.Exp - nowUnix;
-        var requestedAgo = agoSeconds < -ClockSkewSeconds
-            ? "dated " + FormatSpan(-agoSeconds) + " ahead"
-            : FormatSpan(Math.Max(0, agoSeconds)) + " ago";
-        var timeLeft = leftSeconds <= 0 ? "expired" : FormatSpan(leftSeconds) + " left";
+        var (requestedAgo, timeLeft) = ValidityAt(claims.Iat, claims.Exp, now);
         var expiresLocal = DateTimeOffset.FromUnixTimeSeconds(claims.Exp)
             .ToLocalTime().ToString("yyyy-MM-dd HH:mm");
 

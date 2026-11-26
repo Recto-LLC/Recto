@@ -268,6 +268,25 @@ class PhoneRegistration:
     # operator's host reset. Empty for owner phones that never took a member
     # code; additive, so older registrations load unchanged.
     member_bindings: tuple[tuple[str, str], ...] = ()
+    # WHERE THE KEY LIVES (hard rule 14.8): what a vendor's evidence said when the key entered the registry -
+    # "attested", "test" (a test-device code, named by its label) or "unverified" - with the platform and the date. The
+    # evidence itself is never kept. Additive: a registration from before loads as unverified.
+    device_class: str = "unverified"
+    device_platform: str | None = None
+    device_class_at_unix: int = 0
+    device_test_label: str | None = None
+    # THE ONE KEPT THING of an App Attest object (hard rule 14.8): the attested key and the counter of its last act.
+    # Never in a repr, an answer, a log line or a relay.
+    app_attest_key_id: str | None = field(default=None, repr=False)
+    app_attest_public_key_b64u: str | None = field(default=None, repr=False)
+    app_attest_counter: int = field(default=0, repr=False)
+    # Whether this phone's last signed act carried its assertion - "asserted" or "missing"; None for a phone with no
+    # kept key - and that day.
+    act_class: str | None = None
+    act_class_at_unix: int = 0
+    # THE MEMBER'S KEYS (hard rule 14.12): (consumer, subject, public key hex), one for each binding whose service this
+    # phone paired. A key whose binding is gone goes with it.
+    member_grant_keys: tuple[tuple[str, str, str], ...] = ()
 
     @classmethod
     def new(
@@ -281,6 +300,7 @@ class PhoneRegistration:
         poll_public_key_b64u: str | None = None,
         slot: str = "primary",
         member_bindings: tuple[tuple[str, str], ...] = (),
+        device: Any = None,
     ) -> PhoneRegistration:
         now = int(time.time())
         # THE KEY IS THE IDENTITY (2026-09-21): the id names the key. This
@@ -300,7 +320,47 @@ class PhoneRegistration:
             poll_public_key_b64u=poll_public_key_b64u,
             slot=slot,
             member_bindings=member_bindings,
+            **({} if device is None else {
+                "device_class": device.device_class, "device_platform": device.platform,
+                "device_class_at_unix": device.at_unix, "device_test_label": device.test_label,
+            }),
+            **({} if device is None or device.app_attest is None else {
+                "app_attest_key_id": device.app_attest.key_id,
+                "app_attest_public_key_b64u": device.app_attest.public_key_b64u,
+                "app_attest_counter": device.app_attest.counter,
+            }),
         )
+
+
+def member_grant_key(phone: PhoneRegistration, consumer: str, subject: str) -> str | None:
+    """The key this member's grants are checked against, or None. Only while the phone holds the binding."""
+    if (consumer, subject) not in phone.member_bindings:
+        return None
+    return next((k for c, s, k in phone.member_grant_keys if (c, s) == (consumer, subject)), None)
+
+
+def with_member_key(phone: PhoneRegistration, consumer: str, subject: str, key_hex: str | None) -> PhoneRegistration:
+    """``phone`` with that binding's key set, or dropped (None)."""
+    rest = tuple(x for x in phone.member_grant_keys if x[:2] != (consumer, subject))
+    if key_hex is None or (consumer, subject) not in phone.member_bindings:
+        return replace(phone, member_grant_keys=rest)
+    return replace(phone, member_grant_keys=rest + ((consumer, subject, key_hex),))
+
+
+def member_grant_keys_from_doc(raw: Any) -> tuple[tuple[str, str, str], ...]:
+    """The stored list, or a ValueError: a key that cannot be read is never read as none."""
+    out = []
+    for item in raw or ():
+        if not (isinstance(item, (list, tuple)) and len(item) == 3 and all(isinstance(x, str) and x for x in item)
+                and len(item[2]) == 128 and set(item[2]) <= set("0123456789abcdef")):
+            raise ValueError("a phone's member_grant_keys entry is [consumer, subject, 128 hex]")
+        out.append(tuple(item))
+    return tuple(out)
+
+
+def without_unset(doc: dict[str, Any], *names: str) -> dict[str, Any]:
+    """``doc`` less the named fields that hold nothing: a store that never used them reads on an older bootloader."""
+    return {k: v for k, v in doc.items() if k not in names or v}
 
 
 def member_bindings_from_doc(raw: Any) -> tuple[tuple[str, str], ...]:
@@ -338,10 +398,16 @@ def _merge_onto_existing(
     cannot drift between the file store and Postgres."""
     if existing is None:
         return incoming
+    # The same App Attest key never loses an act it has already counted, whatever the caller read before its lock.
+    same = incoming.app_attest_key_id is not None and incoming.app_attest_key_id == existing.app_attest_key_id
     return replace(
         incoming,
         phone_id=existing.phone_id,
         registered_at_unix=existing.registered_at_unix,
+        **({"app_attest_counter": max(existing.app_attest_counter, incoming.app_attest_counter),
+            "act_class": existing.act_class, "act_class_at_unix": existing.act_class_at_unix} if same else {}),
+        # A key is set by its own act alone and leaves with its binding; a registration carries none in.
+        member_grant_keys=tuple(x for x in existing.member_grant_keys if x[:2] in incoming.member_bindings),
     )
 
 
@@ -676,6 +742,10 @@ class PendingRequest:
     # refuses as expired, which is the designed failure (re-request).
     cap_grant_ttl_seconds: int | None = None
     cap_window_stamped_at_unix: int | None = None
+    # A card on a member's phone (hard rule 14.12): the binding it was asked for, and the key its answer is checked against.
+    member_consumer: str | None = None
+    member_subject: str | None = None
+    member_key_hex: str | None = None
 
     # Phase 5 Wave C part 3: app context for the phone's approval
     # render. Bootloader injects from BootloaderConfig.principal_apps
@@ -1804,6 +1874,8 @@ class CapabilityResult:
     agent_id: str | None
     resolved_at_unix: int
     expires_at_unix: int
+    # The bootloader's own signed word that the grant was approved here (hard rule 14.10); None with no signing key.
+    grant_receipt: str | None = None
 
     @property
     def is_expired(self) -> bool:
@@ -2017,6 +2089,13 @@ class StateStoreBase(ABC):
     @abstractmethod
     def list_revocations(self) -> list[RevocationEntry]: ...
 
+    # THE APPROVED GRANTS (hard rule 14.9): the digest of a grant this bootloader redeems itself, noted when an owner
+    # phone's identity key approved its card, until the grant's exp. Nothing else of the grant is kept.
+    @abstractmethod
+    def note_approved_grant(self, digest_b64u: str, exp_unix: int) -> None: ...
+    @abstractmethod
+    def grant_was_approved(self, digest_b64u: str) -> bool: ...
+
     def consume_single_use_capability(self, entry: RevocationEntry) -> bool:
         """Spend a ``max_uses=1`` capability once: True the first time, False after.
 
@@ -2110,6 +2189,15 @@ class StateStoreBase(ABC):
     @abstractmethod
     def update_phone_push(self, phone_id: str, push_token: str, push_platform: str) -> bool: ...
 
+    # A signed act of a phone the store still holds. With a counter: True for exactly one caller per counter value, and
+    # only while the phone still keeps ``key_id`` and has counted less. Without one: the act was accepted unasserted.
+    @abstractmethod
+    def note_act(self, phone_id: str, *, key_id: str, counter: int | None, act_class: str, at_unix: int) -> bool: ...
+
+    # One binding's key, set or dropped (None), on the phone as it stands. False when the phone or the binding is gone.
+    @abstractmethod
+    def note_member_key(self, phone_id: str, consumer: str, subject: str, key_hex: str | None) -> bool: ...
+
     # A displacement in ONE write: the occupant (with its sessions and queue) goes and the incoming registration lands
     # together, or nothing changes. None when the occupant is no longer held. Two writes could leave the slot empty.
     @abstractmethod
@@ -2196,6 +2284,7 @@ class StateStore(StateStoreBase):
         # state directory; survives bootloader restart unlike
         # _pending / _capability_results.
         self._revocations: dict[str, RevocationEntry] = {}
+        self._approved_grants: dict[str, int] = {}
         self._load()
 
     @property
@@ -3022,6 +3111,18 @@ class StateStore(StateStoreBase):
                 key=lambda e: e.jti,
             )
 
+    def note_approved_grant(self, digest_b64u: str, exp_unix: int) -> None:
+        with self._lock:
+            now = time.time()
+            grants = {d: e for d, e in self._approved_grants.items() if e > now}
+            grants[digest_b64u] = int(exp_unix)
+            self._atomic_write(self._dir / "approved_grants.json", {"approved_grants": grants})
+            self._approved_grants = grants
+
+    def grant_was_approved(self, digest_b64u: str) -> bool:
+        with self._lock:
+            return self._approved_grants.get(digest_b64u, 0) > time.time()
+
     def _purge_expired_revocations(self) -> None:
         # Caller holds the lock.
         expired = [
@@ -3189,6 +3290,33 @@ class StateStore(StateStoreBase):
             self._phones = phones
             return True
 
+    def note_act(self, phone_id: str, *, key_id: str, counter: int | None, act_class: str, at_unix: int) -> bool:
+        with self._lock:
+            phone = self._phones.get(phone_id)
+            if phone is None or phone.app_attest_key_id != key_id:
+                return False
+            if counter is not None and counter <= phone.app_attest_counter:
+                return False
+            noted = replace(phone, act_class=act_class, act_class_at_unix=at_unix,
+                            app_attest_counter=phone.app_attest_counter if counter is None else counter)
+            if noted != phone:
+                phones = dict(self._phones)
+                phones[phone_id] = noted
+                self._write_phones(phones)
+                self._phones = phones
+            return True
+
+    def note_member_key(self, phone_id: str, consumer: str, subject: str, key_hex: str | None) -> bool:
+        with self._lock:
+            phone = self._phones.get(phone_id)
+            if phone is None or (key_hex is not None and (consumer, subject) not in phone.member_bindings):
+                return False
+            phones = dict(self._phones)
+            phones[phone_id] = with_member_key(phone, consumer, subject, key_hex)
+            self._write_phones(phones)
+            self._phones = phones
+            return True
+
     def replace_phone(self, occupant_phone_id: str, reg: PhoneRegistration) -> PhoneRegistration | None:
         with self._lock:
             if occupant_phone_id not in self._phones:
@@ -3274,6 +3402,7 @@ class StateStore(StateStoreBase):
                     for r in raw.get("phones", []):
                         r["supported_algorithms"] = tuple(r["supported_algorithms"])
                         r["member_bindings"] = member_bindings_from_doc(r.get("member_bindings"))
+                        r["member_grant_keys"] = member_grant_keys_from_doc(r.get("member_grant_keys"))
                         self._phones[r["phone_id"]] = PhoneRegistration(**r)
             sessions_path = self._dir / "sessions.json"
             if sessions_path.exists():
@@ -3309,6 +3438,11 @@ class StateStore(StateStoreBase):
                         # writes the cleaned list.
                         if not entry.is_expired:
                             self._revocations[entry.jti] = entry
+            approved_path = self._dir / "approved_grants.json"
+            if approved_path.exists():
+                with _naming(approved_path):
+                    raw = json.loads(approved_path.read_text(encoding="utf-8"))["approved_grants"]
+                    self._approved_grants = {str(d): int(e) for d, e in raw.items()}
 
     def _save_phones(self) -> None:
         self._write_phones(self._phones)
@@ -3350,7 +3484,7 @@ class StateStore(StateStoreBase):
 
     @staticmethod
     def _asdict_phone(p: PhoneRegistration) -> dict[str, Any]:
-        d = asdict(p)
+        d = without_unset(asdict(p), "member_grant_keys")
         d["supported_algorithms"] = list(d["supported_algorithms"])
         return d
 

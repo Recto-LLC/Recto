@@ -32,7 +32,14 @@ public sealed record RegistrationRequest(
     // question, the identity key's signature over
     // PollSigning.BuildSlotReplacePayload(slot, occupant ref, public_key_b64u).
     [property: JsonPropertyName("slot")] string Slot = "primary",
-    [property: JsonPropertyName("slot_replace_b64u")] string? SlotReplaceB64u = null);
+    [property: JsonPropertyName("slot_replace_b64u")] string? SlotReplaceB64u = null,
+    // Hard rule 14.8: where the identity key lives, and - for a device no vendor
+    // vouches for - the one-time test-device code from the bootloader's host.
+    // Both optional; a bootloader that reads neither ignores them.
+    [property: JsonPropertyName("device_evidence"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    Recto.Shared.Services.DeviceEvidence? DeviceEvidence = null,
+    [property: JsonPropertyName("test_device_code"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? TestDeviceCode = null);
 
 /// <summary>
 /// Proof that the phone holds the private key matching <c>public_key_b64u</c> &mdash;

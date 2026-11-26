@@ -689,3 +689,55 @@ class TestDevicesPairForwardsTheBoundPhone:
         status, _ = _http_post_json(_pair_url(member_bootloader), _body(url, phone))
         assert status == HTTPStatus.OK
         assert "phoneId" not in fake_consumer["received"][0]["body"]
+
+
+# ── THE DEVICE CLASS (hard rule 14.8) ─────────────────────────────
+
+
+class TestDevicesPairSaysTheBoundPhonesClass:
+    """The relay says what this registry holds about the bound phone, and says it inside what it signs."""
+
+    def _signed(self, fake_consumer) -> dict:
+        from recto.capability.jwt import verify_jws
+        from recto.capability.signing import public_key_hex
+
+        sent = fake_consumer["received"][0]["body"]
+        verify_jws(sent["bootloaderJws"], expected_pubkey=bytes.fromhex(public_key_hex(_BOOTLOADER_KEY)),
+                   expected_aud="consumer")
+        payload = sent["bootloaderJws"].split(".")[1]
+        scope = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))["cap"]["scope"]
+        assert scope["device_class"] == sent["deviceClass"], "the relayed copy is the signed one"
+        return scope
+
+    @pytest.mark.parametrize("held", ["attested", "test", "unverified"])
+    def test_the_class_is_the_registrations(self, member_bootloader, fake_consumer, phone, monkeypatch, held):
+        from dataclasses import replace
+
+        from recto.bootloader.server import BootloaderHandler
+
+        monkeypatch.setattr(BootloaderHandler.config, "devices_pair_signing_key", _BOOTLOADER_KEY)
+        member = _register_member(member_bootloader, member_bootloader["consumer"], "user-1")
+        state = member_bootloader["state"]
+        state.register_phone(replace(state.get_phone(member.ref), device_class=held))
+        status, _ = _http_post_json(_pair_url(member_bootloader), _body(member_bootloader["consumer"], phone))
+        assert status == HTTPStatus.OK
+        assert self._signed(fake_consumer)["device_class"] == held
+
+    def test_with_no_bound_phone_the_class_is_none(self, member_bootloader, fake_consumer, phone, monkeypatch):
+        """A key that registered on no member code here - a script's, say - is never called attested."""
+        from recto.bootloader.server import BootloaderHandler
+
+        monkeypatch.setattr(BootloaderHandler.config, "devices_pair_signing_key", _BOOTLOADER_KEY)
+        status, _ = _http_post_json(_pair_url(member_bootloader), _body(member_bootloader["consumer"], phone))
+        assert status == HTTPStatus.OK
+        assert self._signed(fake_consumer)["device_class"] == "none"
+
+    def test_a_phones_own_word_for_its_class_is_not_relayed(self, member_bootloader, fake_consumer, phone, monkeypatch):
+        from recto.bootloader.server import BootloaderHandler
+
+        monkeypatch.setattr(BootloaderHandler.config, "devices_pair_signing_key", _BOOTLOADER_KEY)
+        _register_member(member_bootloader, member_bootloader["consumer"], "user-1")
+        body = {**_body(member_bootloader["consumer"], phone), "deviceClass": "attested", "device_class": "attested"}
+        status, _ = _http_post_json(_pair_url(member_bootloader), body)
+        assert status == HTTPStatus.OK
+        assert self._signed(fake_consumer)["device_class"] == "unverified"

@@ -188,6 +188,13 @@ def parse_jws(token: str) -> tuple[dict[str, Any], dict[str, Any], bytes, bytes]
     return header, payload, signature, signing_input
 
 
+def signing_input_digest(token: str) -> str:
+    """The digest a JWS signs - base64url SHA-256 of `header.payload` - and what an approval's identity signature is over.
+    It names the grant whatever its signature: one key signs one grant many ways."""
+    signed = token.rsplit(".", 1)[0]
+    return base64.urlsafe_b64encode(hashlib.sha256(signed.encode("ascii")).digest()).rstrip(b"=").decode("ascii")
+
+
 def verify_jws(
     token: str,
     expected_pubkey: bytes,

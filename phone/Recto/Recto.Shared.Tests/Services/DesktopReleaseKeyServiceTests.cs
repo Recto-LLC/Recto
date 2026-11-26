@@ -79,7 +79,7 @@ public class DesktopReleaseKeyServiceTests
         var refusal = pair.IndexOf("if (EnclaveKeys is NoHardwareKeyService)", StringComparison.Ordinal);
         Assert.True(refusal >= 0);
         Assert.Contains("_errorMessage = NoHardwareKeyService.Refusal.Message;", pair);
-        foreach (var later in new[] { "IsDemoPairAttempt", "GetOrCreatePhoneIdAsync(", "GetRegistrationChallengeAsync(", "EnclaveKeys.GenerateAsync(" })
+        foreach (var later in new[] { "IsDemoPairAttempt", "GetOrCreatePhoneIdAsync(", "GetRegistrationChallengeAsync(", "EnclaveKeys.GenerateAttestedAsync(" })
         {
             var at = pair.IndexOf(later, StringComparison.Ordinal);
             Assert.True(at > refusal, $"{later} runs before the no-hardware refusal");

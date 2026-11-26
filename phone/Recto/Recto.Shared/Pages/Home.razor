@@ -1350,7 +1350,7 @@
                                                     Tier: <strong>@capDecoded.Tier</strong>@if (capDecoded.TierCeiling.HasValue) {<span> / ceiling @capDecoded.TierCeiling</span>}
                                                 </p>
                                                 <p class="mb-1 text-muted small">
-                                                    Validity: requested @capDecoded.RequestedAgo &middot; @capDecoded.TimeLeft
+                                                    <CardValidity Iat="capDecoded.Iat" Exp="capDecoded.Exp" />
                                                     (until <code dir="auto">@capDecoded.ExpiresLocal</code>)
                                                 </p>
                                                 <details class="mb-2">
@@ -1981,6 +1981,22 @@
                            @bind:event="oninput" />
                 </div>
 
+                <details class="text-start mb-3">
+                    <summary class="small text-muted">Test device</summary>
+                    <label for="test-device-code" class="form-label small mt-2">
+                        Test-device code, from the bootloader's own host. Leave it empty on a real phone.
+                    </label>
+                    <input id="test-device-code"
+                           type="text"
+                           maxlength="16"
+                           autocomplete="off"
+                           autocapitalize="characters"
+                           class="form-control text-center"
+                           disabled="@_busy"
+                           @bind="_testDeviceCode"
+                           @bind:event="oninput" />
+                </details>
+
                 <div class="form-check text-start mb-3">
                     <input id="pair-as-recovery" class="form-check-input" type="checkbox"
                            disabled="@_busy" @bind="_pairAsRecovery" />
@@ -2045,6 +2061,21 @@
                        in Recto.Shared/Services/EnclaveErrors.cs. *@
                     <div class="alert alert-danger small mt-3 mb-0 text-start" role="alert">
                         @EnclaveErrors.TranslateRectoEnclaveError(_errorMessage)
+                    </div>
+                }
+
+                @if (_offerNewIdentityKey && !_busy)
+                {
+                    <div class="alert alert-warning small mt-3 mb-0 text-start" role="alert">
+                        <div class="mb-2">
+                            This bootloader does not hold this phone's identity key, and the key was made before this
+                            pairing. A new key can be proven to it. Any other bootloader that knows this phone by its
+                            old key will not know the new one. Your recovery phrase is kept.
+                        </div>
+                        <button type="button" class="btn btn-sm btn-outline-danger w-100"
+                                @onclick="HandleNewIdentityKeyClick">
+                            @(_confirmNewIdentityKey ? "Yes, remove the old key" : "Make a new identity key")
+                        </button>
                     </div>
                 }
 
@@ -2207,6 +2238,9 @@
     // potentially confusing to Apple's reviewer.
     private string _bootloaderUrl = DemoBootloaderUrl;
     private string _pairingCode = string.Empty;
+    private string _testDeviceCode = string.Empty;
+    private bool _offerNewIdentityKey;
+    private bool _confirmNewIdentityKey;
 
     // THE SLOTS (hard rule 14.4, 2026-09-21). Which slot this pairing claims,
     // and the replacement question when it is occupied: the registry answers
@@ -3109,9 +3143,60 @@
         }
     }
 
+    private async Task HandleNewIdentityKeyClick()
+    {
+        if (_busy) return;
+        if (!_confirmNewIdentityKey)
+        {
+            _confirmNewIdentityKey = true;
+            return;
+        }
+        var removed = await Unpair.RemoveIdentityKeyAsync(KeyAlias, CancellationToken.None);
+        _offerNewIdentityKey = _confirmNewIdentityKey = false;
+        _errorMessage = removed.Status == UnpairAllStatus.Completed
+            ? "The old key is gone. Pair again with a new pairing code."
+            : removed.Message;
+    }
+
+    private async Task<Result<RegistrationResponse>> RegisterAsync(RegistrationRequest request)
+    {
+        // Written before the request leaves: from here a bootloader may hold the key, until its answer says otherwise.
+        var host = Uri.TryCreate(_bootloaderUrl, UriKind.Absolute, out var uri) ? uri.Host : _bootloaderUrl;
+        var journal = await Pairing.GetIdentityKeyJournalAsync(CancellationToken.None);
+        if (IdentityKeyJournal.MayReplace(journal))
+        {
+            journal = IdentityKeyJournal.Sent(host);
+            await Pairing.SetIdentityKeyJournalAsync(journal, CancellationToken.None);
+        }
+        var result = await BootloaderClient.RegisterAsync(_bootloaderUrl, request, CancellationToken.None);
+        var error = result.IsFailure ? result.Error : null;
+        var after = IdentityKeyJournal.After(journal, host, error);
+        if (after != journal) await Pairing.SetIdentityKeyJournalAsync(after, CancellationToken.None);
+        _offerNewIdentityKey = error is not null && EnclaveKeys.AttestsAtCreation
+            && DeviceEvidence.IsRefusal(error) && !IdentityKeyJournal.MayReplace(after);
+        return result;
+    }
+
+    // Best effort and bounded: with nothing to show the registration still goes, and the bootloader decides.
+    private async Task<DeviceEvidence?> DeviceEvidenceAsync(string challenge, string identityB64u, string pollB64u)
+    {
+        using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        try
+        {
+            var evidence = await EnclaveKeys.GetDeviceEvidenceAsync(
+                KeyAlias, challenge, identityB64u, pollB64u, limit.Token);
+            return evidence.IsSuccess ? evidence.Value : null;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
     private async Task HandlePairClick()
     {
         _errorMessage = null;
+        _offerNewIdentityKey = _confirmNewIdentityKey = false;
         _busy = true;
         // The slot is DECIDED AT THE TAP. Two biometric prompts sit between
         // here and the register call, and on iOS each one takes the app
@@ -3167,7 +3252,11 @@
             await SetBusyTextAsync("Preparing identity key...");
             var existsResult = await EnclaveKeys.KeyExistsAsync(KeyAlias, CancellationToken.None);
             EnclavePublicKey publicKey;
-            if (existsResult.IsSuccess && existsResult.Value)
+            // A key that was made for a try no bootloader ever had is made again, for this one's challenge; every
+            // other key is reused.
+            var remake = EnclaveKeys.AttestsAtCreation
+                && IdentityKeyJournal.MayReplace(await Pairing.GetIdentityKeyJournalAsync(CancellationToken.None));
+            if (existsResult.IsSuccess && existsResult.Value && !remake)
             {
                 var pubResult = await EnclaveKeys.GetPublicKeyAsync(KeyAlias, CancellationToken.None);
                 if (pubResult.IsFailure)
@@ -3179,7 +3268,9 @@
             }
             else
             {
-                var genResult = await EnclaveKeys.GenerateAsync(KeyAlias, CancellationToken.None);
+                await Pairing.SetIdentityKeyJournalAsync(IdentityKeyJournal.New, CancellationToken.None);
+                var genResult = await EnclaveKeys.GenerateAttestedAsync(
+                    KeyAlias, DeviceEvidence.AndroidChallenge(challenge.ChallengeB64u), CancellationToken.None);
                 if (genResult.IsFailure)
                 {
                     _errorMessage = genResult.Error.Message;
@@ -3224,6 +3315,9 @@
                 return;
             }
             var pollPubB64u = Base64UrlEncode(pollGen.Value.PublicKey);
+            // Runs while the person answers the next prompt; the challenge's minute is short.
+            var evidenceTask = DeviceEvidenceAsync(
+                challenge.ChallengeB64u, Base64UrlEncode(publicKey.PublicKey), pollPubB64u);
             await SetBusyTextAsync("Awaiting biometric approval (poll key)...");
             var delegation = await EnclaveKeys.SignAsync(
                 KeyAlias,
@@ -3269,10 +3363,11 @@
                 PushPlatform: pushPlatform,
                 PollPublicKeyB64u: pollPubB64u,
                 PollKeyDelegationB64u: pollDelegationB64u,
-                Slot: slot);
+                Slot: slot,
+                DeviceEvidence: await evidenceTask,
+                TestDeviceCode: string.IsNullOrWhiteSpace(_testDeviceCode) ? null : _testDeviceCode.Trim());
 
-            var registerResult = await BootloaderClient.RegisterAsync(
-                _bootloaderUrl, request, CancellationToken.None);
+            var registerResult = await RegisterAsync(request);
             if (registerResult.IsFailure)
             {
                 _errorMessage = registerResult.Error.Message;
@@ -3308,9 +3403,7 @@
                     return;
                 }
                 await SetBusyTextAsync("Registering with bootloader...");
-                registerResult = await BootloaderClient.RegisterAsync(
-                    _bootloaderUrl, request with { SlotReplaceB64u = Base64UrlEncode(claim.Value) },
-                    CancellationToken.None);
+                registerResult = await RegisterAsync(request with { SlotReplaceB64u = Base64UrlEncode(claim.Value) });
                 if (registerResult.IsFailure)
                 {
                     _errorMessage = registerResult.Error.Message;
@@ -3388,6 +3481,14 @@
                 // Rule 14.2: the poll key the registry echoed (checked above).
                 PollPublicKeyB64u: pollPubB64u);
 
+            // The App Attest key this registration showed is kept here exactly when the registry keeps it there, and
+            // before the pairing is: a pairing is never saved beside an older key the registry has let go. What a
+            // registration without one leaves in place stays in place on both sides.
+            if (registration.AppAttestKept && request.DeviceEvidence?.KeyId is { } appAttestKeyId)
+            {
+                await Pairing.SetAppAttestKeyIdAsync(registration.BootloaderId, appAttestKeyId, CancellationToken.None);
+            }
+
             var saveResult = await Pairing.SaveAsync(pairedState, CancellationToken.None);
             if (saveResult.IsFailure)
             {
@@ -3399,6 +3500,7 @@
             // checked, the state saved. Only now does the host get its anchor.
             RestorePin(pairedState);
 
+            _testDeviceCode = string.Empty;
             _paired = pairedState;
             RebuildFailoverCandidates();
             StartPolling();
@@ -3868,11 +3970,20 @@
             var signingInput = System.Text.Encoding.ASCII.GetBytes($"{headerB64}.{payloadB64}");
             var digest = System.Security.Cryptography.SHA256.HashData(signingInput);
 
-            // 4) Sign the digest with the master key. SignDigestAsync
+            // 4) The biometric, then sign the digest with the master key. SignDigestAsync
             //    returns the 64-byte raw r||s (no recovery v byte) — the
             //    shape JWS ES256K (RFC 8812) expects.
             _pairServiceBusyText = "Awaiting biometric...";
             StateHasChanged();
+            var identity = await EnclaveKeys.SignAsync(
+                KeyAlias,
+                DevicesPairRequest.IdentityPayload(_paired!.BootloaderId, _paired!.PhoneId, Base64UrlEncode(digest)),
+                CancellationToken.None);
+            if (identity.IsFailure)
+            {
+                _pairServiceError = "Couldn't verify it's you: " + identity.Error.Message;
+                return;
+            }
             var signResult = await EthSigner.SignDigestAsync(
                 EthKeyAlias, masterPath, digest, CancellationToken.None);
             if (signResult.IsFailure)
@@ -3898,7 +4009,9 @@
             var pairReq = new DevicesPairRequest(
                 ConsumerBaseUrl: DefaultConsumerBaseUrl,
                 Record: record,
-                UserJws: jws);
+                UserJws: jws,
+                PhoneId: _paired!.PhoneId,
+                IdentitySignatureB64u: Base64UrlEncode(identity.Value));
             var pairResp = await BootloaderClient.PairDeviceAsync(
                 ActiveBootloaderUrl, pairReq, CancellationToken.None);
             if (pairResp.IsFailure)
@@ -4184,6 +4297,23 @@
             ? "mainnet"
             : req.Context.BtcNetwork!;
 
+        // The identity key first - its biometric - and the phrase's key only after it: a declined prompt signs nothing.
+        byte[] payloadHash;
+        try { payloadHash = Base64UrlDecode(req.Context.PayloadHashB64u!); }
+        catch (Exception ex)
+        {
+            _pollingError = $"Could not decode payload hash: {ex.Message}";
+            return;
+        }
+        _processingText = "Awaiting biometric...";
+        StateHasChanged();
+        var enclaveSignResult = await EnclaveKeys.SignAsync(KeyAlias, payloadHash, CancellationToken.None);
+        if (enclaveSignResult.IsFailure)
+        {
+            _pollingError = enclaveSignResult.Error.Message;
+            return;
+        }
+
         _processingText = $"Signing with {_btcCoinDisplayName(coin)} key...";
         StateHasChanged();
         await Task.Yield();
@@ -4208,22 +4338,6 @@
             return;
         }
         var compactSigBase64 = signResult.Value;
-
-        byte[] payloadHash;
-        try { payloadHash = Base64UrlDecode(req.Context.PayloadHashB64u!); }
-        catch (Exception ex)
-        {
-            _pollingError = $"Could not decode payload hash: {ex.Message}";
-            return;
-        }
-        _processingText = "Awaiting biometric...";
-        StateHasChanged();
-        var enclaveSignResult = await EnclaveKeys.SignAsync(KeyAlias, payloadHash, CancellationToken.None);
-        if (enclaveSignResult.IsFailure)
-        {
-            _pollingError = enclaveSignResult.Error.Message;
-            return;
-        }
 
         _processingText = "Sending response...";
         StateHasChanged();
@@ -4282,6 +4396,23 @@
             ? _edDefaultPathForChain(chain)
             : req.Context.EdDerivationPath!;
 
+        // The identity key first - its biometric - and the phrase's key only after it: a declined prompt signs nothing.
+        byte[] payloadHash;
+        try { payloadHash = Base64UrlDecode(req.Context.PayloadHashB64u!); }
+        catch (Exception ex)
+        {
+            _pollingError = $"Could not decode payload hash: {ex.Message}";
+            return;
+        }
+        _processingText = "Awaiting biometric...";
+        StateHasChanged();
+        var enclaveSignResult = await EnclaveKeys.SignAsync(KeyAlias, payloadHash, CancellationToken.None);
+        if (enclaveSignResult.IsFailure)
+        {
+            _pollingError = enclaveSignResult.Error.Message;
+            return;
+        }
+
         _processingText = $"Signing with {_edChainDisplayName(chain)} key...";
         StateHasChanged();
         await Task.Yield();
@@ -4308,22 +4439,6 @@
         }
         var edSignature = signResult.Value.SignatureBase64;
         var edPubkeyHex = signResult.Value.PublicKeyHex;
-
-        byte[] payloadHash;
-        try { payloadHash = Base64UrlDecode(req.Context.PayloadHashB64u!); }
-        catch (Exception ex)
-        {
-            _pollingError = $"Could not decode payload hash: {ex.Message}";
-            return;
-        }
-        _processingText = "Awaiting biometric...";
-        StateHasChanged();
-        var enclaveSignResult = await EnclaveKeys.SignAsync(KeyAlias, payloadHash, CancellationToken.None);
-        if (enclaveSignResult.IsFailure)
-        {
-            _pollingError = enclaveSignResult.Error.Message;
-            return;
-        }
 
         _processingText = "Sending response...";
         StateHasChanged();
@@ -4387,6 +4502,23 @@
             ? "m/44'/60'/0'/0/0"
             : req.Context.EthDerivationPath!;
 
+        // The identity key first - its biometric - and the phrase's key only after it: a declined prompt signs nothing.
+        byte[] payloadHash;
+        try { payloadHash = Base64UrlDecode(req.Context.PayloadHashB64u!); }
+        catch (Exception ex)
+        {
+            _pollingError = $"Could not decode payload hash: {ex.Message}";
+            return;
+        }
+        _processingText = "Awaiting biometric...";
+        StateHasChanged();
+        var enclaveSignResult = await EnclaveKeys.SignAsync(KeyAlias, payloadHash, CancellationToken.None);
+        if (enclaveSignResult.IsFailure)
+        {
+            _pollingError = enclaveSignResult.Error.Message;
+            return;
+        }
+
         _processingText = msgKind switch
         {
             EthMessageKind.PersonalSign => "Signing with ETH key (EIP-191)...",
@@ -4435,22 +4567,6 @@
             return;
         }
         var rsvHex = signResult.Value;
-
-        byte[] payloadHash;
-        try { payloadHash = Base64UrlDecode(req.Context.PayloadHashB64u!); }
-        catch (Exception ex)
-        {
-            _pollingError = $"Could not decode payload hash: {ex.Message}";
-            return;
-        }
-        _processingText = "Awaiting biometric...";
-        StateHasChanged();
-        var enclaveSignResult = await EnclaveKeys.SignAsync(KeyAlias, payloadHash, CancellationToken.None);
-        if (enclaveSignResult.IsFailure)
-        {
-            _pollingError = enclaveSignResult.Error.Message;
-            return;
-        }
 
         _processingText = "Sending response...";
         StateHasChanged();
@@ -4508,19 +4624,7 @@
             ? "m/44'/195'/0'/0/0"
             : req.Context.TronDerivationPath!;
 
-        _processingText = "Signing with TRON key (TIP-191)...";
-        StateHasChanged();
-        await Task.Yield();
-
-        var signResult = await TronSigner.SignMessageAsync(
-            TronKeyAlias, derivationPath, req.Context.TronMessageText!, CancellationToken.None);
-        if (signResult.IsFailure)
-        {
-            _pollingError = signResult.Error.Message;
-            return;
-        }
-        var rsvHex = signResult.Value;
-
+        // The identity key first - its biometric - and the phrase's key only after it: a declined prompt signs nothing.
         byte[] payloadHash;
         try { payloadHash = Base64UrlDecode(req.Context.PayloadHashB64u!); }
         catch (Exception ex)
@@ -4536,6 +4640,19 @@
             _pollingError = enclaveSignResult.Error.Message;
             return;
         }
+
+        _processingText = "Signing with TRON key (TIP-191)...";
+        StateHasChanged();
+        await Task.Yield();
+
+        var signResult = await TronSigner.SignMessageAsync(
+            TronKeyAlias, derivationPath, req.Context.TronMessageText!, CancellationToken.None);
+        if (signResult.IsFailure)
+        {
+            _pollingError = signResult.Error.Message;
+            return;
+        }
+        var rsvHex = signResult.Value;
 
         _processingText = "Sending response...";
         StateHasChanged();
@@ -4627,6 +4744,16 @@
             return;
         }
 
+        // The identity key first - its biometric - and the phrase's key only after it: a declined prompt signs nothing.
+        _processingText = "Awaiting biometric...";
+        StateHasChanged();
+        var enclaveSignResult = await EnclaveKeys.SignAsync(KeyAlias, envelopeHash, CancellationToken.None);
+        if (enclaveSignResult.IsFailure)
+        {
+            _pollingError = enclaveSignResult.Error.Message;
+            return;
+        }
+
         _processingText = "Signing capability JWS (ES256K)...";
         StateHasChanged();
         await Task.Yield();
@@ -4648,15 +4775,6 @@
         if (capSig.Length != 64)
         {
             _pollingError = $"SignDigestAsync returned {capSig.Length} bytes; expected 64 (raw r||s).";
-            return;
-        }
-
-        _processingText = "Awaiting biometric...";
-        StateHasChanged();
-        var enclaveSignResult = await EnclaveKeys.SignAsync(KeyAlias, envelopeHash, CancellationToken.None);
-        if (enclaveSignResult.IsFailure)
-        {
-            _pollingError = enclaveSignResult.Error.Message;
             return;
         }
 
@@ -4772,6 +4890,23 @@
         }
         var fullDigest = inputCheck.Digest!;
 
+        // The identity key first - its biometric - and the phrase's key only after it: a declined prompt signs nothing.
+        byte[] envelopeHash;
+        try { envelopeHash = Base64UrlDecode(req.Context.PayloadHashB64u!); }
+        catch (Exception ex)
+        {
+            _pollingError = $"Could not decode payload hash: {ex.Message}";
+            return;
+        }
+        _processingText = "Awaiting biometric...";
+        StateHasChanged();
+        var enclaveSignResult = await EnclaveKeys.SignAsync(KeyAlias, envelopeHash, CancellationToken.None);
+        if (enclaveSignResult.IsFailure)
+        {
+            _pollingError = enclaveSignResult.Error.Message;
+            return;
+        }
+
         // 3. Sign full digest with operator's master key (same path
         // capability_request uses -- one operator identity, both
         // surfaces). Future v0.6+ may carry an explicit
@@ -4791,28 +4926,6 @@
         if (masterSig.Length != 64)
         {
             _pollingError = $"SignDigestAsync returned {masterSig.Length} bytes; expected 64 (raw r||s).";
-            return;
-        }
-
-        // 4. Sign the Ed25519 paired-phone envelope over
-        // payload_hash_b64u (the partial-canonical hash the bootloader
-        // queue-stashed). NOT the full digest -- the envelope binds
-        // the operator's biometric consent to the pending request the
-        // bootloader queued, not to the freshly-augmented JSON we
-        // just built phone-side.
-        byte[] envelopeHash;
-        try { envelopeHash = Base64UrlDecode(req.Context.PayloadHashB64u!); }
-        catch (Exception ex)
-        {
-            _pollingError = $"Could not decode payload hash: {ex.Message}";
-            return;
-        }
-        _processingText = "Awaiting biometric...";
-        StateHasChanged();
-        var enclaveSignResult = await EnclaveKeys.SignAsync(KeyAlias, envelopeHash, CancellationToken.None);
-        if (enclaveSignResult.IsFailure)
-        {
-            _pollingError = enclaveSignResult.Error.Message;
             return;
         }
 
@@ -4905,6 +5018,23 @@
         }
         var fullDigest = inputCheck.Digest!;
 
+        // The identity key first - its biometric - and the phrase's key only after it: a declined prompt signs nothing.
+        byte[] envelopeHash;
+        try { envelopeHash = Base64UrlDecode(req.Context.PayloadHashB64u!); }
+        catch (Exception ex)
+        {
+            _pollingError = $"Could not decode payload hash: {ex.Message}";
+            return;
+        }
+        _processingText = "Awaiting biometric...";
+        StateHasChanged();
+        var enclaveSignResult = await EnclaveKeys.SignAsync(KeyAlias, envelopeHash, CancellationToken.None);
+        if (enclaveSignResult.IsFailure)
+        {
+            _pollingError = enclaveSignResult.Error.Message;
+            return;
+        }
+
         // 3. Sign digest with operator master key (m/44'/60'/0'/0/0,
         // same identity as profile_create's master attestation +
         // capability_request). Future v0.6+ may carry an explicit
@@ -4924,25 +5054,6 @@
         if (masterSig.Length != 64)
         {
             _pollingError = $"SignDigestAsync returned {masterSig.Length} bytes; expected 64 (raw r||s).";
-            return;
-        }
-
-        // 4. Sign the Ed25519 paired-phone envelope over
-        // payload_hash_b64u. Binds the operator's biometric consent
-        // to the pending request the bootloader queued.
-        byte[] envelopeHash;
-        try { envelopeHash = Base64UrlDecode(req.Context.PayloadHashB64u!); }
-        catch (Exception ex)
-        {
-            _pollingError = $"Could not decode payload hash: {ex.Message}";
-            return;
-        }
-        _processingText = "Awaiting biometric...";
-        StateHasChanged();
-        var enclaveSignResult = await EnclaveKeys.SignAsync(KeyAlias, envelopeHash, CancellationToken.None);
-        if (enclaveSignResult.IsFailure)
-        {
-            _pollingError = enclaveSignResult.Error.Message;
             return;
         }
 
@@ -5037,6 +5148,23 @@
         }
         var fullDigest = inputCheck.Digest!;
 
+        // The identity key first - its biometric - and the phrase's key only after it: a declined prompt signs nothing.
+        byte[] envelopeHash;
+        try { envelopeHash = Base64UrlDecode(req.Context.PayloadHashB64u!); }
+        catch (Exception ex)
+        {
+            _pollingError = $"Could not decode payload hash: {ex.Message}";
+            return;
+        }
+        _processingText = "Awaiting biometric...";
+        StateHasChanged();
+        var enclaveSignResult = await EnclaveKeys.SignAsync(KeyAlias, envelopeHash, CancellationToken.None);
+        if (enclaveSignResult.IsFailure)
+        {
+            _pollingError = enclaveSignResult.Error.Message;
+            return;
+        }
+
         // 3. Sign digest with operator master key.
         _processingText = "Signing master attestation (ES256K)...";
         StateHasChanged();
@@ -5052,23 +5180,6 @@
         if (masterSig.Length != 64)
         {
             _pollingError = $"SignDigestAsync returned {masterSig.Length} bytes; expected 64 (raw r||s).";
-            return;
-        }
-
-        // 4. Sign Ed25519 envelope.
-        byte[] envelopeHash;
-        try { envelopeHash = Base64UrlDecode(req.Context.PayloadHashB64u!); }
-        catch (Exception ex)
-        {
-            _pollingError = $"Could not decode payload hash: {ex.Message}";
-            return;
-        }
-        _processingText = "Awaiting biometric...";
-        StateHasChanged();
-        var enclaveSignResult = await EnclaveKeys.SignAsync(KeyAlias, envelopeHash, CancellationToken.None);
-        if (enclaveSignResult.IsFailure)
-        {
-            _pollingError = enclaveSignResult.Error.Message;
             return;
         }
 
@@ -6560,6 +6671,15 @@
         var signingInput = System.Text.Encoding.ASCII.GetBytes($"{headerB64}.{payloadB64}");
         var digest = System.Security.Cryptography.SHA256.HashData(signingInput);
 
+        // The identity key first - its biometric - over this unpairing; the bootloader passes on its word that it signed.
+        var identity = await EnclaveKeys.SignAsync(
+            KeyAlias,
+            DevicesUnpairRequest.IdentityPayload(_paired!.BootloaderId, _paired!.PhoneId, Base64UrlEncode(digest)),
+            CancellationToken.None);
+        if (identity.IsFailure)
+        {
+            return "Couldn't verify it's you: " + identity.Error.Message;
+        }
         var signResult = await EthSigner.SignDigestAsync(
             EthKeyAlias, masterPath, digest, CancellationToken.None);
         if (signResult.IsFailure)
@@ -6576,7 +6696,9 @@
         var unpairReq = new DevicesUnpairRequest(
             ConsumerBaseUrl: DefaultConsumerBaseUrl,
             UserPubkeyHex: masterPubkeyHex,
-            UserJws: jws);
+            UserJws: jws,
+            PhoneId: _paired!.PhoneId,
+            IdentitySignatureB64u: Base64UrlEncode(identity.Value));
         var relay = await BootloaderClient.UnpairDeviceAsync(
             _paired!.BootloaderUrl, unpairReq, CancellationToken.None);
         if (relay.IsFailure)

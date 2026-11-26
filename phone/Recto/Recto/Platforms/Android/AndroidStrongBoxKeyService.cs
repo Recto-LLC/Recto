@@ -49,6 +49,49 @@ public sealed class AndroidStrongBoxKeyService : IEnclaveKeyService
     public Task<Result<EnclavePublicKey>> GenerateAsync(string keyAlias, CancellationToken ct)
         => Generate(keyAlias, requireUserAuth: true);
 
+    public bool AttestsAtCreation => true;
+
+    /// <summary>
+    /// The identity key with its attestation (hard rule 14.8). A device whose keystore cannot attest makes the key
+    /// without one, as it always has; the bootloader decides what it takes.
+    /// </summary>
+    public async Task<Result<EnclavePublicKey>> GenerateAttestedAsync(
+        string keyAlias, byte[] attestationChallenge, CancellationToken ct)
+    {
+        // Key attestation talks to the keystore's provisioning and can be slow: off the UI thread.
+        var attested = await Task.Run(() => Generate(keyAlias, requireUserAuth: true, attestationChallenge), ct)
+            .ConfigureAwait(false);
+        return attested.IsSuccess ? attested : await Generate(keyAlias, requireUserAuth: true).ConfigureAwait(false);
+    }
+
+    /// <summary>The key's certificate chain, leaf first, when the platform attested it.</summary>
+    public Task<Result<DeviceEvidence?>> GetDeviceEvidenceAsync(
+        string keyAlias, string registrationChallenge, string identityKeyB64u, string pollKeyB64u, CancellationToken ct)
+    {
+        try
+        {
+            using var keyStore = KeyStore.GetInstance(AndroidKeyStoreProvider);
+            keyStore!.Load(null);
+            // A key made without a challenge carries one self-signed certificate.
+            if (keyStore.GetCertificateChain(keyAlias) is not { Length: >= 3 } chain)
+            {
+                return Task.FromResult(Result.Success<DeviceEvidence?>(null));
+            }
+            var encoded = new List<string>(chain.Length);
+            foreach (var certificate in chain)
+            {
+                encoded.Add(Convert.ToBase64String(certificate.GetEncoded()
+                    ?? throw new InvalidOperationException("Certificate.GetEncoded returned null.")));
+            }
+            return Task.FromResult(Result.Success<DeviceEvidence?>(DeviceEvidence.Android(encoded)));
+        }
+        catch (Exception ex)
+        {
+            return Task.FromResult(Result.Failure<DeviceEvidence?>(
+                Error.Failure($"Android attestation read failed: {ex.GetType().Name}")));
+        }
+    }
+
     /// <summary>
     /// The poll key (hard rule 14.2): StrongBox/TEE-resident like the
     /// identity key, but with NO user-authentication requirement, so signing a
@@ -58,7 +101,8 @@ public sealed class AndroidStrongBoxKeyService : IEnclaveKeyService
     public Task<Result<EnclavePublicKey>> GenerateDeviceKeyAsync(string keyAlias, CancellationToken ct)
         => Generate(keyAlias, requireUserAuth: false);
 
-    private static Task<Result<EnclavePublicKey>> Generate(string keyAlias, bool requireUserAuth)
+    private static Task<Result<EnclavePublicKey>> Generate(
+        string keyAlias, bool requireUserAuth, byte[]? attestationChallenge = null)
     {
         try
         {
@@ -67,7 +111,7 @@ public sealed class AndroidStrongBoxKeyService : IEnclaveKeyService
             var generator = KeyPairGenerator.GetInstance(KeyProperties.KeyAlgorithmEc, AndroidKeyStoreProvider)
                 ?? throw new InvalidOperationException("KeyPairGenerator.GetInstance returned null.");
 
-            var spec = BuildSpec(keyAlias, strongBox: true, requireUserAuth);
+            var spec = BuildSpec(keyAlias, strongBox: true, requireUserAuth, attestationChallenge);
             try
             {
                 generator.Initialize(spec);
@@ -75,9 +119,10 @@ public sealed class AndroidStrongBoxKeyService : IEnclaveKeyService
                     ?? throw new InvalidOperationException("GenerateKeyPair returned null.");
                 return Task.FromResult(BuildPublicKeyResult(pair));
             }
-            catch (StrongBoxUnavailableException)
+            // A StrongBox that makes keys and cannot attest one just now gives way too: an attested TEE key shows more.
+            catch (Exception ex) when (ex is StrongBoxUnavailableException || attestationChallenge is not null)
             {
-                spec = BuildSpec(keyAlias, strongBox: false, requireUserAuth);
+                spec = BuildSpec(keyAlias, strongBox: false, requireUserAuth, attestationChallenge);
                 generator.Initialize(spec);
                 using var pair = generator.GenerateKeyPair()
                     ?? throw new InvalidOperationException("GenerateKeyPair returned null.");
@@ -982,7 +1027,8 @@ public sealed class AndroidStrongBoxKeyService : IEnclaveKeyService
         }
     }
 
-    private static KeyGenParameterSpec BuildSpec(string keyAlias, bool strongBox, bool requireUserAuth)
+    private static KeyGenParameterSpec BuildSpec(
+        string keyAlias, bool strongBox, bool requireUserAuth, byte[]? attestationChallenge)
     {
         // Not chained: the binding types each Builder method as returning a
         // nullable Builder, so a fluent chain is a chain of possible-null
@@ -1022,6 +1068,11 @@ public sealed class AndroidStrongBoxKeyService : IEnclaveKeyService
         if (strongBox && OperatingSystem.IsAndroidVersionAtLeast(28))
         {
             builder.SetIsStrongBoxBacked(true);
+        }
+
+        if (attestationChallenge is not null)
+        {
+            builder.SetAttestationChallenge(attestationChallenge);
         }
 
         return builder.Build();

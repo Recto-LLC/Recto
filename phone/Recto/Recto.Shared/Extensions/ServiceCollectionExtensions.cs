@@ -58,6 +58,7 @@ public static class ServiceCollectionExtensions
         // poll key. The typed-client factory picks the BootloaderClient ctor
         // that takes IReadSigner once it is registered.
         services.AddSingleton<IReadSigner, PollKeyReadSigner>();
+        services.AddSingleton<ActAsserter>();
 
         // What each request id was first shown with: the app's, so a page that
         // is left and entered again still knows it.

@@ -30,7 +30,9 @@ public sealed record UserVaultGrantContext(
 /// <summary>A phone-signed user-vault record: POST /v0.4/user-vault/grant, /revoke, /revoke-key.</summary>
 public sealed record UserVaultSignedRecord(
     [property: JsonPropertyName("record")] IReadOnlyDictionary<string, object?> Record,
-    [property: JsonPropertyName("signature_b64u")] string SignatureB64u);
+    [property: JsonPropertyName("signature_b64u")] string SignatureB64u,
+    [property: JsonPropertyName("device_assertion"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? DeviceAssertion = null);
 
 /// <summary>A phone-signed grants-list read: POST /v0.4/user-vault/grants (hard rule 15.aa).</summary>
 public sealed record UserVaultGrantsListRequest(

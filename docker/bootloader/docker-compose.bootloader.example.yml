@@ -54,6 +54,17 @@ services:
       # The per-key allowlist ENFORCES (an agent reads only the keys RECTO_CONNECTIONS_AGENT_KEYS names). Set 0 only
       # for a short discovery window, reading the WARNING log for the keys to list, then back to 1.
       - RECTO_CONNECTIONS_KEY_ACL_ENFORCE=1
+      # What a new phone proves (hard rule 14.8). require refuses a new key without its vendor's evidence; record
+      # verifies and stores it and refuses nothing. The Android list names your app builds' signing certificates, the
+      # iOS list your App IDs; with the second empty no iPhone's evidence verifies.
+      - RECTO_DEVICE_EVIDENCE_MODE=${RECTO_DEVICE_EVIDENCE_MODE:-require}
+      # What an iPhone with a kept App Attest key adds to the acts it signs: a wrong assertion is refused in both modes,
+      # a missing one is noted (record) or refused (require).
+      - RECTO_APPROVAL_EVIDENCE_MODE=${RECTO_APPROVAL_EVIDENCE_MODE:-record}
+      # Whether an unpairing must also be signed by the phone's identity key: off, record or require.
+      - RECTO_UNPAIR_IDENTITY_MODE=${RECTO_UNPAIR_IDENTITY_MODE:-record}
+      - RECTO_ATTESTATION_ANDROID_APPS=${RECTO_ATTESTATION_ANDROID_APPS:-}
+      - RECTO_ATTESTATION_IOS_APP_IDS=${RECTO_ATTESTATION_IOS_APP_IDS:-}
 
       # [CUSTOMIZE 4] Per-agent token interpolation. Each agent
       # declared in agents.json with `token_env: "VARNAME"` needs a

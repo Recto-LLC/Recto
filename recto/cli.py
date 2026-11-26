@@ -835,7 +835,7 @@ def build_parser() -> argparse.ArgumentParser:
         "bootloader", help="Host-side acts on the bootloader's owner slots (read them; reset a lost sole phone).",
     )
     sub_bootloader = p_bootloader.add_subparsers(
-        dest="bootloader_command", required=True, metavar="{owner-slots,owner-reset}",
+        dest="bootloader_command", required=True, metavar="{owner-slots,owner-reset,test-device}",
     )
     p_owner_slots = sub_bootloader.add_parser(
         "owner-slots",
@@ -848,6 +848,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated phone refs the owner slots must hold - exactly these, read off each phone's own "
              "Pairing Details. Exits 1 on any difference.",
     )
+    p_test_device = sub_bootloader.add_parser(
+        "test-device",
+        help="Issue ONE single-use code that admits a device with no vendor evidence (an emulator, or a phone a vendor "
+             "will not vouch for) as class `test`. Run it on the bootloader's own host, as the bootloader's own user.",
+    )
+    p_test_device.add_argument("--state-dir", required=True, help="The state dir the bootloader serves from.")
+    p_test_device.add_argument("--plane", required=True, choices=("member", "owner"),
+                               help="member: a consumer's test phone. owner: an owner slot (break-glass; every other "
+                                    "owner-slot rule still applies).")
+    p_test_device.add_argument("--label", required=True, help="Your name for the device; it shows beside the phone.")
+    p_test_device.add_argument("--ttl-seconds", type=int, default=900, help="60 to 3600 (default 900).")
     p_owner_reset = sub_bootloader.add_parser(
         "owner-reset",
         help="Remove the LAST owner phone (a lost sole phone) and reopen genesis. A non-sole owner phone is revoked "
@@ -996,6 +1007,8 @@ def main(
         if cmd == "bootloader":
             if args.bootloader_command == "owner-slots":
                 return _cmd_bootloader_owner_slots(args, out=out, err=err)
+            if args.bootloader_command == "test-device":
+                return _cmd_bootloader_test_device(args, out=out, err=err)
             if args.bootloader_command == "owner-reset":
                 if args.start or args.arm or args.complete or args.abort:
                     from recto import top_plane_cli as _tp
@@ -1216,6 +1229,19 @@ def _owner_rows(store):
     return [(p, phone_ref_of(p.public_key_b64u)) for p in store.list_phones() if p.slot in SLOTS]
 
 
+def _cmd_bootloader_test_device(args, *, out, err):
+    from recto.bootloader.device_codes import TestCodeRefused, issue
+    try:
+        code, expires = issue(Path(args.state_dir), plane=args.plane, label=args.label, ttl_seconds=args.ttl_seconds)
+    except (TestCodeRefused, OSError) as exc:
+        print(f"recto bootloader test-device: {exc}", file=err)
+        return 1
+    print(f"TEST DEVICE CODE: {code}", file=out)
+    print(f"  one registration on the {args.plane} plane, as class `test`; expires unix {expires}", file=out)
+    print("  Pair with a pairing code as usual and enter this as the test-device code.", file=out)
+    return 0
+
+
 def _cmd_bootloader_owner_slots(args, *, out, err):
     """List the owner slots - slot, phone_id, the key-derived ref, the caller-chosen label, registered and last-seen
     times, whether a poll key is delegated - and the genesis marker. --expect: exactly these refs, or exit 1."""
@@ -1253,7 +1279,9 @@ def _print_owner_slots(store, args, *, out, err):
     for p, ref in sorted(rows, key=lambda r: (r[0].slot, r[1])):
         print(f"{p.slot:<9} {ref}  phone_id={p.phone_id}  label={p.device_label!r} (the caller's)  "
               f"registered={ts(p.registered_at_unix)}  last_seen={ts(p.last_seen_unix)}  "
-              f"poll_key={'yes' if p.poll_public_key_b64u else 'NO'}", file=out)
+              f"poll_key={'yes' if p.poll_public_key_b64u else 'NO'}  device={p.device_class}"
+              f"{f' ({p.device_test_label!r})' if p.device_test_label else ''}"
+              f"{f'  acts={p.act_class}' if p.act_class else ''}", file=out)
     if not rows:
         print("(no owner phone)", file=out)
     rc = 0

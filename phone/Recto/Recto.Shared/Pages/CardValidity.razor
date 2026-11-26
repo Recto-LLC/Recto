@@ -1,0 +1,21 @@
+@implements IDisposable
+@using Recto.Shared.Capability
+
+@{ var (ago, left) = CapabilityAuditView.ValidityAt(Iat, Exp, DateTimeOffset.UtcNow); }
+Validity: requested @ago &middot; @left
+
+@code {
+    // Drawn again each second, by itself: the card around it is not, so nothing on it moves and no hold starts again.
+    [Parameter, EditorRequired] public long Iat { get; set; }
+    [Parameter, EditorRequired] public long Exp { get; set; }
+
+    private System.Threading.Timer? _tick;
+
+    protected override void OnInitialized()
+        => _tick = new System.Threading.Timer(
+            _ => OnTick(), null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+
+    protected virtual void OnTick() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose() => _tick?.Dispose();
+}

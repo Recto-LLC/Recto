@@ -75,6 +75,73 @@ require any particular runtime to still be alive.**
    user's vault and no roster of users' phones.
 7. **The top plane needs the recovery passphrase AND one owner device, every
    time,** and the bootloader's id is sealed at genesis, never re-derived.
+8. **A new key shows where it lives.** Unless the operator sets `record`, a key
+   this registry does not hold enters a slot only with its platform's evidence
+   for this registration, or on a one-time test-device code issued at the
+   bootloader's own host, and it is kept as `attested` or `test`. Android key
+   attestation is about the identity key itself: made in the TEE or StrongBox of
+   a phone with a verified, locked boot. iOS App Attest is about the app: a
+   genuine build this bootloader names vouched for the identity key and the poll
+   key, and that the key is in the Secure Enclave rests on that app's code. A
+   key the registry holds is not refused a re-pairing for want of evidence, and
+   no read asks for any; a vendor's root gates admission, never identity.
+   **An iPhone answers with its attested key.** Where the registry keeps a
+   phone's App Attest key, each act the phone signs may carry that key's
+   assertion over the act, checked here with no vendor asked. A wrong one is
+   refused and the act stays undone. A missing one is accepted and noted, or
+   under `require` refused - unless the act only removes authority (a deny, a
+   revoke, a vault revoke or stop-all, the cancel of an owner reset). A phone
+   with no kept key is asked nothing; an Android phone's identity key is its
+   attested key and signs already.
+   **Nothing of the evidence outlives its check except what this rule names.**
+   The evidence is read once and dropped, and the list of what is kept is
+   closed, beside the identity key the registry already names the phone by: the
+   class, the platform, the date and a test device's label; **of an App Attest
+   object, its key's id, its public key and its counter, and nothing else;** and
+   whether the phone's last act carried an assertion, and its date. The App
+   Attest receipt is not kept: it serves only the vendor's own service. The kept
+   key is in the phone's record (and in the record of an owner reset until it
+   seats the phone) and nowhere else. Nothing off the list reaches a stored
+   record, an enrollment that waits, a log line, a refusal beyond its fixed
+   reason, an event, the relay or a signed result, and the kept key reaches none
+   of these but its record. A thing joins the list by being named here, and
+   nothing on it is a device identifier. The phone reads the proof for the one
+   registration, keeps of it the App Attest key's id alone, and never asks the
+   platform to attest a device identifier or a device property.
+9. **A grant redeemed here was approved here.** The recovery phrase alone opens
+   nothing at a bootloader: a grant that reads a secret or acts on a connection
+   is taken only where an owner phone's identity key approved its card on this
+   bootloader. Kept of it until the grant expires: its digest and that expiry.
+   On the phone the identity key signs first, with its biometric, and the
+   phrase's key only after.
+10. **An approved grant carries this bootloader's receipt.** Beside the grant it
+   hands out, the bootloader signs, with its own key, that a paired phone's
+   identity key approved that grant here: the grant's digest, its audience and
+   expiry, the approver's slot and the classes of rule 8. A verifier checks it
+   offline against the key it pinned. The receipt names no phone, is never spent
+   and is not kept.
+11. **An unpairing relayed here is the phone's own act.** The phrase's key signs
+   it, and the identity key signs it too; the bootloader passes on its own signed
+   word that one did, and for whom: an owner's phone for the owner's own key, a
+   member's for its own subject at that consumer, and neither for the other. A
+   person who has no phone is never kept from unpairing: a consumer keeps a way
+   of its own that asks no phone.
+12. **A member approves for itself alone.** A member's approval is checked against
+   the key that member's own phone presented, under its identity key, when it
+   paired that consumer, and never the operator's. That public key is kept on the
+   phone's record, for that consumer, while the binding and the pairing stand.
+   What a member may be asked is the operator's list, over a floor no list moves:
+   never the bootloader, its vault, a connection, an owner slot, a deployment or
+   another person. It is refused when it is asked, by name, not after the tap.
+   Its receipt says `member` and the subject's handle.
+   **The planes.** A member is a consumer's, one plane below the owner's: bound to
+   that consumer by an opaque handle, its key kept under that binding and gone
+   with it. Nothing of a member's is judged by, signed with or kept beside an
+   owner slot's, the operator's key or the top plane, and nothing of the owner's
+   is reached through a consumer. An owner's phone speaks for no member, and an
+   owner's receipt stands in for no member's. An agent asks only the members of
+   the consumers it is listed for, and one consumer's members are not another's.
+   What a consumer does to its own member is the consumer's act, on its records.
 
 **15. Fail-closed has named shapes.** Each is a decision Recto stands on,
 pinned by a test; a finding that names one is answered by its letter.

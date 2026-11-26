@@ -78,7 +78,10 @@ from recto.bootloader.state import (
     _merge_onto_existing,
     default_state_dir,
     member_bindings_from_doc,
+    member_grant_keys_from_doc,
     validate_genesis_pubkey,
+    with_member_key,
+    without_unset,
 )
 
 try:  # optional dependency -- recto[postgres]
@@ -193,6 +196,8 @@ _KIND_PROFILE_REVOKE_DEVICE = "profile_revoke_device"
 # deadline - before it refuses. (Checking out the lock's pooled connection may add the pool's own timeout.)
 REGISTRY_LOCK_WAIT_SECONDS = 30
 _KIND_OWNER_ENROLL = "owner_enroll"
+# An approved grant's digest (hard rule 14.9), with an empty doc, until the grant's exp.
+_KIND_APPROVED_GRANT = "approved_grant"
 _META_OWNER_GENESIS = "owner_genesis"
 
 
@@ -309,7 +314,7 @@ class PostgresStateStore(StateStoreBase):
 
     @staticmethod
     def _phone_to_doc(p: PhoneRegistration) -> dict[str, Any]:
-        d = asdict(p)
+        d = without_unset(asdict(p), "member_grant_keys")
         d["supported_algorithms"] = list(d["supported_algorithms"])
         return d
 
@@ -318,6 +323,7 @@ class PostgresStateStore(StateStoreBase):
         d = dict(d)
         d["supported_algorithms"] = tuple(d.get("supported_algorithms") or ())
         d["member_bindings"] = member_bindings_from_doc(d.get("member_bindings"))
+        d["member_grant_keys"] = member_grant_keys_from_doc(d.get("member_grant_keys"))
         return PhoneRegistration(**d)
 
     def register_phone(self, reg: PhoneRegistration) -> PhoneRegistration:
@@ -455,6 +461,10 @@ class PostgresStateStore(StateStoreBase):
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _pending_to_doc(req: PendingRequest) -> dict[str, Any]:
+        return without_unset(asdict(req), "member_consumer", "member_subject", "member_key_hex")
+
+    @staticmethod
     def _pending_from_doc(d: dict[str, Any]) -> PendingRequest:
         d = dict(d)
         ac = d.get("app_context")
@@ -488,7 +498,7 @@ class PostgresStateStore(StateStoreBase):
                 (
                     req.request_id,
                     req.phone_id,
-                    Jsonb(asdict(req)),
+                    Jsonb(self._pending_to_doc(req)),
                     req.expires_at_unix,
                 ),
             )
@@ -515,7 +525,7 @@ class PostgresStateStore(StateStoreBase):
                     "WHERE request_id = %s "
                     "RETURNING request_id"
                 ),
-                (Jsonb(asdict(req)), req.expires_at_unix, req.request_id),
+                (Jsonb(self._pending_to_doc(req)), req.expires_at_unix, req.request_id),
             ).fetchone()
         return row is not None
 
@@ -579,6 +589,16 @@ class PostgresStateStore(StateStoreBase):
                 (kind, request_id, int(time.time())),
             ).fetchone()
         return row[0] if row else None
+
+    def note_approved_grant(self, digest_b64u: str, exp_unix: int) -> None:
+        with self._pool.connection() as conn:
+            conn.execute(
+                self._q("INSERT INTO {schema}.results (kind, request_id, doc, expires_at_unix) VALUES (%s, %s, %s, %s) "
+                        "ON CONFLICT (kind, request_id) DO UPDATE SET expires_at_unix = EXCLUDED.expires_at_unix"),
+                (_KIND_APPROVED_GRANT, digest_b64u, Jsonb({}), int(exp_unix)))
+
+    def grant_was_approved(self, digest_b64u: str) -> bool:
+        return self._get_result(_KIND_APPROVED_GRANT, digest_b64u) is not None
 
     # Capability results
     def put_capability_result(self, result: CapabilityResult) -> None:
@@ -1036,6 +1056,36 @@ class PostgresStateStore(StateStoreBase):
                 ),
                 (Jsonb({"push_token": push_token, "push_platform": push_platform,
                         "last_seen_unix": int(time.time())}), phone_id),
+            ).fetchone()
+        return row is not None
+
+    def note_member_key(self, phone_id: str, consumer: str, subject: str, key_hex: str | None) -> bool:
+        with self._pool.connection() as conn:
+            with conn.transaction():
+                row = conn.execute(
+                    self._q("SELECT doc FROM {schema}.phones WHERE phone_id = %s FOR UPDATE"), (phone_id,)).fetchone()
+                phone = self._phone_from_doc(row[0]) if row else None
+                if phone is None or (key_hex is not None and (consumer, subject) not in phone.member_bindings):
+                    return False
+                conn.execute(
+                    self._q("UPDATE {schema}.phones SET doc = %s WHERE phone_id = %s"),
+                    (Jsonb(self._phone_to_doc(with_member_key(phone, consumer, subject, key_hex))), phone_id))
+        return True
+
+    def note_act(self, phone_id: str, *, key_id: str, counter: int | None, act_class: str, at_unix: int) -> bool:
+        # One UPDATE whose WHERE is the rule, so two instances answering with one counter let one through.
+        doc: dict[str, Any] = {"act_class": act_class, "act_class_at_unix": at_unix}
+        params: list[Any] = [phone_id, key_id]
+        rule = ""
+        if counter is not None:
+            doc["app_attest_counter"] = counter
+            rule = " AND COALESCE((doc->>'app_attest_counter')::bigint, 0) < %s"
+            params.append(counter)
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                self._q("UPDATE {schema}.phones SET doc = doc || %s WHERE phone_id = %s "
+                        "AND doc->>'app_attest_key_id' = %s" + rule + " RETURNING phone_id"),
+                (Jsonb(doc), *params),
             ).fetchone()
         return row is not None
 

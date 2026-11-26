@@ -56,6 +56,7 @@ def ctx(tmp_path):
         challenges=challenges, ssl_context=None, signed_poll_mode="required",
         capability_agent_tokens={AGENT_ID: AGENT_TOKEN},
         member_code_consumers={AGENT_ID: [CONSUMER]},
+        member_grants={AGENT_ID: {"actions": ["thrupost:rename"], "audiences": ["consumer"]}},
     )
     host, port = server.server_address
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -154,6 +155,11 @@ def _card(ctx, phone_ref: str, member_of: Any = None, *, omit: bool = False) -> 
     from tests.test_bootloader_capability import _claims_dict
 
     claims = dict(_claims_dict(), jti=f"cap-{uuid.uuid4().hex}")   # each ask is its own
+    target = ctx["state"].get_phone(phone_ref)
+    if isinstance(member_of, dict) and isinstance(member_of.get("subject"), str) and target.slot == "member":
+        # What a member may be asked (hard rule 14.12).
+        claims.update(iss="phone:member:enclave", sub=member_of["subject"], aud=["consumer"], max_uses=1,
+                      cap=dict(claims["cap"], groups=[], allow_actions=["thrupost:rename"]))
     body: dict[str, Any] = {"phone_id": phone_ref, "claims": claims, "operation_description": "member plane"}
     if not omit:
         body["member_of"] = member_of
@@ -168,6 +174,7 @@ def _member(ctx, user_id: str = "member-1") -> Phone:
     member = Phone(f"phone of {user_id}")
     status, body = member.register(ctx, challenge=_member_challenge(ctx, user_id=user_id))
     assert status in (200, 201), body
+    assert ctx["state"].note_member_key(member.ref, CONSUMER, _subject(user_id), "ab" * 64)
     return member
 
 

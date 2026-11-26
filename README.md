@@ -379,6 +379,34 @@ that it contains it.
 
 ---
 
+### A new phone proves where its key lives
+
+A key the registry does not hold enters a slot only with evidence (hard rule
+14.8). Set which builds you trust:
+
+| Setting | Default |
+|---|---|
+| `RECTO_DEVICE_EVIDENCE_MODE` | `require`; `record` verifies and stores the class and refuses nothing |
+| `RECTO_APPROVAL_EVIDENCE_MODE` | `record`; `require` refuses an iPhone's signed act that lacks its App Attest key's assertion (an act that only removes authority is not refused for it) |
+| `RECTO_UNPAIR_IDENTITY_MODE` | `record`; `require` refuses an unpairing the phone's identity key did not sign, `off` looks at nothing |
+| `RECTO_ATTESTATION_ANDROID_APPS` | empty: `<package>=<sha256 of the signing certificate>`, comma-separated; empty checks no app |
+| `RECTO_ATTESTATION_IOS_APP_IDS` | empty: `<team id>.<bundle id>`, comma-separated; empty verifies no iOS evidence |
+| `RECTO_ATTESTATION_STATUS_FILE` | unset: a copy of Google's attestation status list; unset checks no revocation |
+
+The bootloader prints each at startup with what it does not check. An emulator,
+or a phone its vendor will not vouch for, pairs on a one-time code from the
+bootloader's own host, and is kept as `test`:
+
+```
+recto bootloader test-device --state-dir <state dir> --plane member --label emulator-1
+```
+
+`--plane owner` is the break-glass for an owner slot: every other owner-slot rule
+still applies. The refusals are `device_evidence_required`,
+`device_evidence_invalid` (with a `reason`), `test_device_code_invalid` and
+`too_many_wrong_codes`; for an act, `approval_evidence_invalid` (with a `reason`)
+and `approval_evidence_required`.
+
 ## The capability claim schema
 
 Standard JWT claims plus a `cap` extension.

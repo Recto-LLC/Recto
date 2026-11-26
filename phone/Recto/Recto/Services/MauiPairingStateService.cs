@@ -25,6 +25,7 @@ public sealed class MauiPairingStateService : IPairingStateService
 {
     private const string PhoneIdKey = "recto.phone.id";
     private const string PairingStateKey = "recto.phone.pairing";
+    private const string IdentityKeyJournalKey = "recto.phone.identity.journal";
 
     public async Task<Result<PairingState?>> GetCurrentAsync(CancellationToken ct)
     {
@@ -84,6 +85,62 @@ public sealed class MauiPairingStateService : IPairingStateService
         catch (Exception ex)
         {
             return Task.FromResult(Result.Failure(Error.Failure($"Failed to clear pairing state: {ex.Message}")));
+        }
+    }
+
+    private static string AppAttestKey(string bootloaderId)
+        => "recto.phone.appattest." + Convert.ToHexStringLower(
+            System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(bootloaderId)))[..16];
+
+    public async Task<string?> GetAppAttestKeyIdAsync(string bootloaderId, CancellationToken ct)
+    {
+        try
+        {
+            return await ResilientStorage.GetAsync(AppAttestKey(bootloaderId)).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    public async Task SetAppAttestKeyIdAsync(string bootloaderId, string? keyId, CancellationToken ct)
+    {
+        try
+        {
+            if (keyId is null) ResilientStorage.Remove(AppAttestKey(bootloaderId));
+            else await ResilientStorage.SetAsync(AppAttestKey(bootloaderId), keyId).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // A stale id would be a wrong assertion, which is refused; none is a missing one.
+            try { ResilientStorage.Remove(AppAttestKey(bootloaderId)); } catch (Exception) { }
+        }
+    }
+
+    public async Task<string?> GetIdentityKeyJournalAsync(CancellationToken ct)
+    {
+        try
+        {
+            return await ResilientStorage.GetAsync(IdentityKeyJournalKey).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    public async Task SetIdentityKeyJournalAsync(string? entry, CancellationToken ct)
+    {
+        try
+        {
+            if (entry is null) ResilientStorage.Remove(IdentityKeyJournalKey);
+            else await ResilientStorage.SetAsync(IdentityKeyJournalKey, entry).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // An entry that may be stale must not outlive the write that failed.
+            try { ResilientStorage.Remove(IdentityKeyJournalKey); } catch (Exception) { }
         }
     }
 

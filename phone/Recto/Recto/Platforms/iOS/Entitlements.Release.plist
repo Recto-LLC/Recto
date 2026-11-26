@@ -14,6 +14,10 @@
     <key>aps-environment</key>
     <string>production</string>
 
+    <!-- App Attest. The App ID needs the App Attest capability, and the profile must carry it. -->
+    <key>com.apple.developer.devicecheck.appattest-environment</key>
+    <string>production</string>
+
     <key>keychain-access-groups</key>
     <array>
         <string>$(AppIdentifierPrefix)app.recto.phone</string>

@@ -41,6 +41,8 @@ public sealed record RegistrationResponse(
     // THE REPLACEMENT QUESTION: a 409 slot_occupied parses into this same
     // record with Registered=false, Error="slot_occupied" and the occupant the
     // operator is asked about. BootloaderClient passes that one 409 through.
+    // Hard rule 14.8: the registry keeps the App Attest key this registration showed.
+    [property: JsonPropertyName("app_attest_kept")] bool AppAttestKept = false,
     [property: JsonPropertyName("error")] string? Error = null,
     [property: JsonPropertyName("occupant")] SlotOccupant? Occupant = null);
 

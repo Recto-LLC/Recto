@@ -43,6 +43,22 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     items[:] = kept
 
 
+@pytest.fixture(autouse=True)
+def software_phones(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The suite's phones are software keys, so a server built with no device policy records them. A module that sets
+    ``REAL_DEVICE_DEFAULT = True`` gets the shipped default."""
+    if not getattr(request.module, "REAL_DEVICE_DEFAULT", False):
+        monkeypatch.setattr("recto.bootloader.device_evidence.DEFAULT_MODE", "record")
+
+
+@pytest.fixture(autouse=True)
+def grants_minted_in_place(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The suite mints its grants in place, with no card and no phone. A module that sets ``REAL_GRANT_APPROVAL = True``
+    gets the store's own answer."""
+    if not getattr(request.module, "REAL_GRANT_APPROVAL", False):
+        monkeypatch.setattr("recto.bootloader.state.StateStore.grant_was_approved", lambda self, digest: True)
+
+
 @pytest.fixture
 def clean_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[pytest.MonkeyPatch]:
     """Yield a monkeypatch instance with no Recto-prefixed env vars set.

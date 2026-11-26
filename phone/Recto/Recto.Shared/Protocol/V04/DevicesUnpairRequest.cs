@@ -41,7 +41,14 @@ namespace Recto.Shared.Protocol.V04;
 public sealed record DevicesUnpairRequest(
     [property: JsonPropertyName("consumer_base_url")] string ConsumerBaseUrl,
     [property: JsonPropertyName("user_pubkey_hex")] string UserPubkeyHex,
-    [property: JsonPropertyName("user_jws")] string UserJws);
+    [property: JsonPropertyName("user_jws")] string UserJws,
+    [property: JsonPropertyName("phone_id"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? PhoneId = null,
+    [property: JsonPropertyName("identity_signature_b64u"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? IdentitySignatureB64u = null)
+{
+    /// <summary>What the identity key signs over an unpairing (hard rule 14.11): the grant by the digest of what it signs.</summary>
+    public static byte[] IdentityPayload(string bootloaderId, string phoneId, string digestB64u)
+        => System.Text.Encoding.ASCII.GetBytes($"recto-unpair-v1|{bootloaderId}|{phoneId}|{digestB64u}");
+}
 
 /// <summary>
 /// Bootloader relay response for <c>POST /v0.4/devices/unpair</c>. The

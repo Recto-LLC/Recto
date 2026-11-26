@@ -192,9 +192,9 @@ def verify_jwt(token: str, *, public_key_b64u: str, audience: str) -> SessionCla
 # NOTE THE AMBIGUITY THIS DOES NOT RESOLVE, AND CANNOT. "ed25519" is sent by
 # Android StrongBox phones AND by the software fallback path; the string alone
 # does not distinguish hardware from software. Only ATTESTATION does, and that
-# is GATE 2b (Android KeyStore attestation + iOS App Attest). This constant
-# closes enrollment-by-silence; it does NOT make an algorithm name evidence of
-# a hardware root. Do not read it as one.
+# is GATE 2b (recto.bootloader.device_evidence, asked of every new key at
+# registration). This constant closes enrollment-by-silence; it does NOT make
+# an algorithm name evidence of a hardware root. Do not read it as one.
 SUPPORTED_ALGORITHMS: tuple[str, ...] = ("ed25519", "ecdsa-p256")
 
 

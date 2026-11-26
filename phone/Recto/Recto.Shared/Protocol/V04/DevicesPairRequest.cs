@@ -18,7 +18,16 @@ namespace Recto.Shared.Protocol.V04;
 public sealed record DevicesPairRequest(
     [property: JsonPropertyName("consumer_base_url")] string ConsumerBaseUrl,
     [property: JsonPropertyName("record")] DevicesPairRecord Record,
-    [property: JsonPropertyName("user_jws")] string UserJws);
+    [property: JsonPropertyName("user_jws")] string UserJws,
+    [property: JsonPropertyName("device_assertion"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? DeviceAssertion = null,
+    [property: JsonPropertyName("phone_id"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? PhoneId = null,
+    [property: JsonPropertyName("identity_signature_b64u"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? IdentitySignatureB64u = null)
+{
+    /// <summary>What the identity key signs over a pairing (hard rule 14.12): the grant by the digest of what it signs.</summary>
+    public static byte[] IdentityPayload(string bootloaderId, string phoneId, string digestB64u)
+        => System.Text.Encoding.ASCII.GetBytes($"recto-pair-v1|{bootloaderId}|{phoneId}|{digestB64u}");
+}
 
 /// <summary>The pairing record: the canonical tuple every party fingerprints
 /// (sorted keys, no whitespace). <see cref="PhonePubkey"/> is 128 lowercase

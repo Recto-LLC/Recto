@@ -30,4 +30,6 @@ public sealed record RevokeRequest(
     [property: JsonPropertyName("revoker_phone_id")] string RevokerPhoneId,
     [property: JsonPropertyName("target_phone_id")] string TargetPhoneId,
     [property: JsonPropertyName("challenge_b64u")] string ChallengeB64u,
-    [property: JsonPropertyName("signature_b64u")] string SignatureB64u);
+    [property: JsonPropertyName("signature_b64u")] string SignatureB64u,
+    [property: JsonPropertyName("device_assertion"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? DeviceAssertion = null);
